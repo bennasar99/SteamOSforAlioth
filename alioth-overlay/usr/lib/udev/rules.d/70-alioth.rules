@@ -16,6 +16,11 @@
 # matrix below. Doing it here rather than with --force-orientation leaves the
 # picture alone; --force-orientation would rotate an output that is already
 # correct.
+#
+# This is the unmodified orientation used with Bluetooth/other controllers or
+# no controller. The Razer Kishi 180-degree flip is added by
+# 71-alioth-flip.rules; install or remove that file together with
+# 99-orientation.conf.
 SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="Focaltech FT8756 Touchscreen", \
   ENV{ID_INPUT}="1", ENV{ID_INPUT_TOUCHSCREEN}="1", TAG+="seat", TAG+="uaccess", \
   ENV{LIBINPUT_CALIBRATION_MATRIX}="0 1 0 -1 0 1"

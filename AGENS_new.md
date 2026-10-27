@@ -39,6 +39,10 @@ Do not confuse the two:
 - The installed phone now has **4 GiB zram with LZ4** plus a **2 GiB
   `/swapfile`** (priority 50; zram priority 100). The stock 2.7 GB `ram/2`
   lzo-rle value was a likely factor in the memory-pressure session crashes.
+- The installed phone now also has the **Razer Kishi** orientation pair
+  (`99-orientation.conf` + `71-alioth-flip.rules`); picture and touch are
+  confirmed correct. Without a Razer Kishi, remove both and keep the
+  unmodified orientation.
 
 ## Crash investigation (2026-10-27)
 
@@ -151,11 +155,20 @@ Conclusions:
 The live phone zram0 is 4 GiB LZ4, and the drop-in has the same values. A reboot
 is not required for the live device; the drop-in is authoritative on next boot.
 
-## Done: screen orientation 180° (picture confirmed; touch pending)
+## Done: Razer Kishi 180° screen orientation (picture and touch confirmed)
 
 The panel DTS uses `rotation = <90>`, which mainline maps to `RIGHT_UP`
-(gamescope auto = `right`/270). The correct 180° flip for the USB-C/controller
-side is therefore **`left`/90**, not `right` and not `upsidedown`.
+(gamescope auto = `right`/270). The correct 180° flip for the **Razer Kishi**
+used on this phone is therefore **`left`/90**, not `right` and not
+`upsidedown`.
+
+The Kishi's USB-C connector holds the phone with its USB-C edge on the
+controller side; in the default `right` orientation the picture is upside
+down. The 180° flip fixes the picture for that controller. **This is not a
+universal default.** With a Bluetooth controller, a different USB-C
+controller, or no controller, use the unmodified `right` orientation: do not
+install `99-orientation.conf` or `71-alioth-flip.rules`. The two files are a
+pair; installing only one leaves either the picture or touch rotated 180°.
 
 ### Source files
 
@@ -172,17 +185,23 @@ Touch matrix for the flipped picture:
 LIBINPUT_CALIBRATION_MATRIX="0 -1 1 1 0 0"
 ```
 
-The base rule `70-alioth.rules` still carries the original
-`0 1 0 -1 0 1`; the `71-` file overrides it. The touch matrix must be reloaded
-(`udevadm control --reload-rules`, `udevadm trigger --action=change
---subsystem-match=input`) and the gamescope session restarted so libinput
-reopens the touchscreen.
+The base rule `70-alioth.rules` still carries the unmodified orientation's
+`0 1 0 -1 0 1`; the `71-` file overrides it only for the Razer Kishi flip.
+Both files must be installed or removed together. The touch matrix must be
+reloaded (`udevadm control --reload-rules`, `udevadm trigger --action=change
+--subsystem-match=input`) and the gamescope session restarted, or the phone
+rebooted, so libinput reopens the touchscreen.
 
 ### Status
 
-- Picture orientation: **confirmed** by the user with `left`.
-- Touch after the 180° flip: **pending**. The user asked how to fix touch;
-  the matrix above was supplied but a successful touch test was not reported.
+- Picture orientation: **confirmed** by the user with `left` and a Razer Kishi.
+- Touch: **confirmed** after installing `71-alioth-flip.rules`, reloading
+  udev, and rebooting. The installed phone had only the base `70` matrix, so
+  touch was 180° off until the pair was installed.
+- Without a Razer Kishi: remove both files and keep the unmodified `right`
+  orientation with `70-alioth.rules`; picture and touch are then both correct.
+  This is the configuration to use with a Bluetooth controller, a different
+  USB-C controller, or no controller.
 
 ## Failed / unverified: FPS limiter
 
@@ -454,11 +473,15 @@ Both passed at the end of these changes. They cover:
 `python3 -m py_compile` on the changed Python files passed.
 `git diff --check` passed.
 
-Suspend via the power button is now confirmed working on the phone and is
-built into the source. No on-device test has proved the FPS limiter, charger
-hold, or touch after the 180° flip; those remain the pending items above.
+Suspend via the power button and Razer Kishi touch orientation are now
+confirmed working on the phone and are built into the source. No on-device
+test has proved the FPS limiter or charger hold; those remain the pending
+items above.
 
-## Files changed (source, uncommitted)
+## Files changed (source)
+
+The orientation/power/system code is committed in `31e0ca6`. The documentation
+edits in this file and the READMEs are uncommitted at handoff.
 
 ```text
 alioth-overlay/README.md

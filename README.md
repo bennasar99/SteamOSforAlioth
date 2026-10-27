@@ -161,6 +161,15 @@ answers which question, and in what order to read them.
   `linux-firmware`. Same filenames, same byte counts, different signature —
   so a wrong one looks correct in every way except that the screen stays
   black.
+- **The 180° panel flip is Razer Kishi-specific.** The maintainer uses a Razer
+  Kishi, whose USB-C connector holds the phone with its USB-C edge on the
+  controller side; in the default orientation the picture is upside down in
+  that grip. `99-orientation.conf` rotates the picture 180° with
+  `GAMESCOPE_ORIENTATION=left`, and `71-alioth-flip.rules` rotates touch to
+  match. With a Bluetooth controller, another USB-C controller, or no
+  controller, remove both files and use the unmodified `right` orientation.
+  They are a pair: never install only one, or either the picture or touch
+  will stay rotated 180°.
 - **The RTC lies.** It reads about 64 years fast on a cold boot, which breaks
   PAM and every HTTPS certificate until NTP catches up. The port installs a
   `clock-epoch` floor to keep the first boot sane.

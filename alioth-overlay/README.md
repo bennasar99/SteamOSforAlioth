@@ -49,8 +49,8 @@ Flip 2 / Mini、MANGMI Air Y Pro / Pocket Max、AYN Thor Lite），与 alioth �
 | `usr/lib/systemd/system/swapfile.swap` | 2 GiB swapfile，priority 50（zram 是 100） |
 | `usr/lib/systemd/system/alioth-swapfile-setup.service` | 在 swapfile.swap 之前建文件 |
 | `etc/systemd/logind.conf.d/99-alioth-suspend.conf` | 电源键直接 suspend；覆盖 Frame 的 `HandlePowerKey=ignore` |
-| `etc/systemd/user/gamescope-session.service.d/99-orientation.conf` | USB-C 手柄在另一侧时的 180° 画面翻转 |
-| `usr/lib/udev/rules.d/71-alioth-flip.rules` | 与上面翻转配套的触摸校准矩阵 |
+| `etc/systemd/user/gamescope-session.service.d/99-orientation.conf` | Razer Kishi 专用：180° 画面翻转（其他手柄/不接手柄时删除） |
+| `usr/lib/udev/rules.d/71-alioth-flip.rules` | Razer Kishi 专用：与翻转配套的触摸矩阵（必须与 99 成对启用/删除） |
 
 ### 电源 UI
 
@@ -89,12 +89,24 @@ s2idle，再按一次唤醒；不需要等空闲超时。`steamos-powerbuttond` 
 user service 即可。插着 USB 时 gadget/ttyGS0 是唤醒源，可能在充电状态下立刻
 醒来；确认的那次是电池供电。
 
-### 屏幕翻转
+### 屏幕翻转（Razer Kishi 专用）
 
-`99-orientation.conf` 固定 `GAMESCOPE_ORIENTATION=left`，`71-alioth-flip.rules`
-把触摸矩阵改成翻转后的 `0 -1 1 1 0 0`。这是启动期参数：切换方向要重启
-gamescope，触摸设备也要重新打开。没有运行时的 Steam UI 开关；要加 UI 需要
-Decky 插件或一个非 Steam 快捷方式 + root helper。
+`99-orientation.conf` + `71-alioth-flip.rules` 是给 **Razer Kishi** 用的：
+Kishi 的 USB-C 接头把手机的 USB-C 边固定在手柄一侧，默认 `right` 方向下
+画面是倒的。`GAMESCOPE_ORIENTATION=left` 做 180° 翻转，`71` 把触摸矩阵
+改成配套的 `0 -1 1 1 0 0`。
+
+这两个文件必须成对安装或删除。它们不是通用默认值：本 fork 默认启用，是因为
+维护者使用 Razer Kishi。使用蓝牙手柄、其他 USB-C 手柄或不接手柄时，请删除
+这两个文件，保留未修改的 `right` 方向和 `70-alioth.rules` 的
+`0 1 0 -1 0 1`；否则画面或触摸会单独转 180°。
+从源码构建时直接删掉这两个 overlay 文件即可；已安装系统则删除
+`/usr/lib/systemd/user/gamescope-session.service.d/99-orientation.conf` 和
+`/usr/lib/udev/rules.d/71-alioth-flip.rules` 后重启。
+
+这是启动期参数：切换方向要重启 gamescope 或整机，让 libinput 重新打开触摸
+设备。没有运行时的 Steam UI 开关；要加 UI 需要 Decky 插件或一个非 Steam
+快捷方式 + root helper。
 
 ## 这台机器上「没有按键」意味着什么
 
