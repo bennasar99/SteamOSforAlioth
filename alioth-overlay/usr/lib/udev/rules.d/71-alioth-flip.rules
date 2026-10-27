@@ -1,0 +1,9 @@
+# Touch calibration for the 180-degree alioth panel flip above.
+#
+# 70-alioth.rules maps raw touch (nx, ny) to the old landscape frame as
+# (ny, 1 - nx). The flipped frame is that result rotated 180 degrees, so the
+# new mapping is (1 - ny, nx). Keep this in a separate, higher-numbered file
+# so removing the flip only means removing this file.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="Focaltech FT8756 Touchscreen", \
+  ENV{ID_INPUT}="1", ENV{ID_INPUT_TOUCHSCREEN}="1", TAG+="seat", TAG+="uaccess", \
+  ENV{LIBINPUT_CALIBRATION_MATRIX}="0 -1 1 1 0 0"

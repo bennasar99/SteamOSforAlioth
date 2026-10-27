@@ -46,6 +46,7 @@ want_exec=(
   usr/lib/steamos/panel-modes
   usr/lib/steamos/sm8550-fixpad
   usr/bin/start-gamescope-session
+  usr/share/deckard/RUNSTEAM.sh
 )
 missing=(); notexec=()
 for f in "${want_exec[@]}"; do
@@ -57,6 +58,27 @@ done
 [[ ${#notexec[@]} -eq 0 ]] \
   && pass "会话脚本可执行" "都带可执行位" \
   || fail "会话脚本可执行" "装成了不可执行: ${notexec[*]}"
+
+# 1a. zram. The stock Frame config is ram/2 with lzo-rle; on the 6 GB phone
+#     that is 2.7 GB. Install the shared SteamOS-ARM drop-in so the next boot
+#     gets RAM-sized zstd zram.
+ZRAM="$R/usr/lib/systemd/zram-generator.conf.d/60-steamos-arm-zram.conf"
+if [[ -f "$ZRAM" ]] && grep -q 'zram-size = 4096' "$ZRAM" \
+   && grep -q 'compression-algorithm = lz4' "$ZRAM"; then
+  pass "zram 已改为 4 GiB LZ4" "60-steamos-arm-zram.conf 已装"
+else
+  fail "zram 已改为 4 GiB LZ4" "缺少或内容不对: $ZRAM"
+fi
+
+# 1b. The Frame launcher passes -deckard/-vrgamepadui and makes gamescope
+#     treat game windows as VR overlays; the FPS limiter exempts those. The
+#     handheld launcher must not put those flags in STEAM_ARGS.
+if grep -qE '^[[:space:]]*-(deckard|vrgamepadui)([[:space:]]|$)' \
+    "$R/usr/share/deckard/RUNSTEAM.sh"; then
+  fail "Steam 不用 Frame VR 启动参数" "RUNSTEAM.sh 的 STEAM_ARGS 仍然带 -deckard/-vrgamepadui"
+else
+  pass "Steam 不用 Frame VR 启动参数" "RUNSTEAM.sh 不传 -deckard/-vrgamepadui"
+fi
 
 # 2. drop-in。没有 gamescope-session.service.d/99-odin.conf，TimeoutStartSec
 #    还是 Frame 原版的 5 秒，而 gamescope 起两个 Xwayland 要十几秒 ——

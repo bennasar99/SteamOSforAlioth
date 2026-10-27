@@ -52,10 +52,19 @@ files=(
   usr/lib/steamos/panel-modes
   usr/lib/steamos/sm8550-fixpad
   usr/bin/start-gamescope-session
+  # The Frame launcher passes -deckard/-vrgamepadui and makes Steam treat game
+  # windows as VR overlays; gamescope's FPS limiter explicitly exempts those.
+  # The handheld launcher uses -steampal/-steamdeck and does not set the VR
+  # target property.
+  usr/share/deckard/RUNSTEAM.sh
   usr/lib/systemd/user/gamescope-session.service.d/99-odin.conf
   usr/lib/systemd/user/gamescope-session.target.d/99-odin.conf
   usr/lib/systemd/user/steam.service.d/99-odin.conf
   usr/lib/systemd/user/steam.service.d/60-gamescope-env.conf
+  # Stock zram is ram/2 with lzo-rle. On a 6 GB phone that is 2.7 GB and the
+  # Steam UI plus a Proton game can exhaust it. The shared SteamOS-ARM zram
+  # drop-in sizes it to RAM (capped at 8 GB) and uses zstd.
+  usr/lib/systemd/zram-generator.conf.d/60-steamos-arm-zram.conf
 )
 for f in "${files[@]}"; do
   [[ -f "$SOVL/$f" ]] || die "缺 $SOVL/$f"

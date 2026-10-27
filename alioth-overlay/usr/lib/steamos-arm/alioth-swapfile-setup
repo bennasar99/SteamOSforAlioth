@@ -1,0 +1,19 @@
+#!/bin/sh
+# Create the 2 GiB alioth swap file once, then leave it alone.
+#
+# The file lives on / (userdata, ext4) and is used after the 4 GiB zram:
+# swapfile priority 50, zram priority 100. Running mkswap on every boot is
+# avoided by checking the existing swap signature first.
+set -eu
+FILE=/swapfile
+SIZE_MB=2048
+
+if [ ! -e "$FILE" ]; then
+    fallocate -l "${SIZE_MB}M" "$FILE" 2>/dev/null \
+        || dd if=/dev/zero of="$FILE" bs=1M count="$SIZE_MB" status=none
+fi
+chmod 600 "$FILE"
+
+if ! blkid -p -s TYPE -o value "$FILE" 2>/dev/null | grep -qx swap; then
+    mkswap "$FILE" >/dev/null
+fi

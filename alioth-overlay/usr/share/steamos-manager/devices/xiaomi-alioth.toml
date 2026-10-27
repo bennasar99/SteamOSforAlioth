@@ -1,0 +1,11 @@
+# Xiaomi Poco F3 / Redmi K40 (alioth, SM8250-AC).
+#
+# The handheld RUNSTEAM.sh makes Steam render the handheld Performance page on
+# this port. The TDP/profile interfaces come from steamos-arm-power; the device
+# class below is the same SM8250 handheld class as the other Adreno 650
+# devices, while the friendly name stays correct.
+[[device]]
+dt.compatible = "xiaomi,alioth"
+device = "retroid_pocket"
+variant = "RP5"
+friendly_name = "Xiaomi Poco F3"

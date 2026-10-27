@@ -125,7 +125,11 @@ if [[ "$MANGOAPP" != 1 ]]; then
   export STEAM_MANGOAPP_HORIZONTAL_SUPPORTED=0
   export STEAM_DISABLE_MANGOAPP_ATOM_WORKAROUND=1
 fi
-export STEAM_GAMESCOPE_VRR_SUPPORTED=1
+# alioth's DSI panel is a fixed 60 Hz panel with no VRR. Advertising VRR makes
+# Steam take the variable-refresh limiter path, where the framerate limit
+# appears inert on this display. Keep VRR off and let the dynamic limiter pace
+# on vblank instead.
+export STEAM_GAMESCOPE_VRR_SUPPORTED=0
 export STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1
 export STEAM_GAMESCOPE_TEARING_SUPPORTED=1
 export STEAM_GAMESCOPE_DYNAMIC_FPSLIMITER=1
@@ -215,6 +219,10 @@ MAX_HZ="$(/usr/lib/steamos/panel-modes --max "$OUTPUT" 2>/dev/null)"
 # 120). Same limit as the other 865 Linux ports.
 case "$(tr -d '\0' </sys/firmware/devicetree/base/model 2>/dev/null)" in
   "Retroid Pocket 5"|"Retroid Pocket Flip2") MAX_HZ=60; PANEL_60_ONLY=1 ;;
+  # Poco F3 / alioth: the session forces 60 Hz and --generate-drm-mode fixed;
+  # the panel's 90/120 modes are not used. Do not advertise a refresh-rate
+  # slider that cannot change anything.
+  "Xiaomi Poco F3") MAX_HZ=60; PANEL_60_ONLY=1 ;;
 esac
 # Start the Steam UI at 60 Hz: at 144 it redraws menus 144x/s, which roughly
 # doubles UI GPU/CPU load (heat, fan, sluggishness). Steam's refresh slider
@@ -226,7 +234,12 @@ REFRESH_HZ="${REFRESH_HZ:-60}"
 # 60,90,120,144 -> limits 30/60/90/120/144). Only a panel that lists a single
 # rate above 60 Hz gets the old 60-to-max range, so it still has a slider.
 PANEL_RATES="$(/usr/lib/steamos/panel-modes --rates "$OUTPUT" 2>/dev/null)"
-[[ -n "${PANEL_60_ONLY:-}" ]] && PANEL_RATES=60
+if [[ -n "${PANEL_60_ONLY:-}" ]]; then
+  PANEL_RATES=60
+  # Also clear an inherited value, otherwise Steam keeps a stale refresh-rate
+  # slider even though this panel has a single usable rate.
+  unset STEAM_DISPLAY_REFRESH_LIMITS
+fi
 if [[ "$PANEL_RATES" =~ ^[0-9]+(,[0-9]+)+$ ]]; then
   export STEAM_DISPLAY_REFRESH_LIMITS="${STEAM_DISPLAY_REFRESH_LIMITS:-${PANEL_RATES}}"
 elif (( MAX_HZ > 60 )); then
@@ -343,7 +356,8 @@ GAMESCOPE_ARGS+=(
   --filter linear
   --steam
   --xwayland-count 2
-  --adaptive-sync
+  # No adaptive sync: the panel is fixed 60 Hz and the VRR limiter path
+  # does not pace it. The dynamic limiter uses vblank without it.
   --default-touch-mode 4
   --hide-cursor-delay 3000
   --framerate-limit 0

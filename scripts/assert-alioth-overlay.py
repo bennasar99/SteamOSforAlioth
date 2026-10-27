@@ -25,6 +25,27 @@ OVL = sys.argv[1] if len(sys.argv) > 1 else "alioth-overlay"
 DEVICES = os.path.join(OVL, "etc/inputplumber/devices.d/02-xiaomi-alioth.yaml")
 KEYMAP = os.path.join(OVL, "etc/inputplumber/capability_maps.d/alioth_keys.yaml")
 RULES = os.path.join(OVL, "usr/lib/udev/rules.d/70-alioth.rules")
+FLIP_RULES = os.path.join(OVL, "usr/lib/udev/rules.d/71-alioth-flip.rules")
+ORIENT_DROPIN = os.path.join(
+    OVL, "etc/systemd/user/gamescope-session.service.d/99-orientation.conf")
+POWER_SCRIPT = os.path.join(OVL, "usr/lib/steamos-arm/steamos-arm-power")
+POWER_LIMITS = os.path.join(OVL, "usr/lib/steamos-arm/power_limits.py")
+POWER_SERVICE = os.path.join(OVL, "usr/lib/systemd/system/steamos-arm-power.service")
+POWER_WANTS = os.path.join(
+    OVL, "usr/lib/systemd/system/multi-user.target.wants/steamos-arm-power.service")
+POWER_REMOTES = os.path.join(
+    OVL, "usr/share/steamos-manager/remotes.d/50-steamos-arm.toml")
+POWER_POLICY = os.path.join(
+    OVL, "usr/share/dbus-1/system.d/org.steamos_arm.Power.conf")
+DEVICE_TOML = os.path.join(
+    OVL, "usr/share/steamos-manager/devices/xiaomi-alioth.toml")
+LOGIND_SUSPEND = os.path.join(
+    OVL, "etc/systemd/logind.conf.d/99-alioth-suspend.conf")
+SWAP_SETUP = os.path.join(OVL, "usr/lib/steamos-arm/alioth-swapfile-setup")
+SWAP_SERVICE = os.path.join(OVL, "usr/lib/systemd/system/alioth-swapfile-setup.service")
+SWAP_UNIT = os.path.join(OVL, "usr/lib/systemd/system/swapfile.swap")
+SWAP_WANTS = os.path.join(
+    OVL, "usr/lib/systemd/system/swap.target.wants/swapfile.swap")
 DROPIN_DIR = os.path.join(OVL, "etc/systemd/user/gamescope-session.target.d")
 # steamos-overlay 的这个 drop-in 把 Wants= 清空后只留 steam 那三个，所以我们
 # 加 Wants= 的 drop-in 必须按文件名排在它**后面**。见下面第 7 条。
@@ -38,6 +59,11 @@ PATCHED_ONLY_ARG = "--use-rotation-shader"
 # 1080x2400 竖屏，所以归一化触摸坐标要从 (nx, ny) 变成 (ny, 1 - nx)。
 # 2026-10-23 真机实测确认的值。
 TOUCH_MATRIX = "0 1 0 -1 0 1"
+# 180-degree flip for controller use: the old frame (ny, 1 - nx) rotated by 180
+# is (1 - ny, nx). This file has a higher number than 70-alioth.rules, so it
+# overrides that matrix without editing the base rule.
+FLIP_MATRIX = "0 -1 1 1 0 0"
+FLIP_ORIENTATION = "left"
 # steamos-powerbuttond 按这个 udev 属性找电源键，见下面第 6 条。
 POWER_ENV = "STEAMOS_POWER_BUTTON"
 
@@ -114,6 +140,26 @@ else:
     #    设备后**直接以 0 退出** —— 不报错、journal 里一行都没有，表现是电源键
     #    完全没反应：不熄屏、不弹关机菜单。2026-10-23 真机实测，补上属性后它
     #    打印 "Found power button device at /dev/input/event0"。
+    # 5b. 180° flip. The picture is flipped by the gamescope drop-in; the
+    #     libinput matrix below changes the same amount, because the raw touch
+    #     frame is unchanged. Keep both in the overlay so a future build cannot
+    #     ship the picture flip without the touch fix.
+    try:
+        flip_rules = io.open(FLIP_RULES, encoding="utf-8").read()
+        orient = io.open(ORIENT_DROPIN, encoding="utf-8").read()
+    except OSError as exc:
+        check("180° 翻转触摸矩阵", False, f"没有 {FLIP_RULES}: {exc}")
+        check("180° 翻转 drop-in", False, f"没有 {ORIENT_DROPIN}: {exc}")
+    else:
+        want_flip = f'ENV{{LIBINPUT_CALIBRATION_MATRIX}}="{FLIP_MATRIX}"'
+        check("180° 翻转触摸矩阵", want_flip in flip_rules,
+              f"71-alioth-flip.rules 里有 {FLIP_MATRIX}" if want_flip in flip_rules
+              else f"缺 {want_flip} —— 翻转画面后触摸会偏 180 度")
+        want_orient = f"GAMESCOPE_ORIENTATION={FLIP_ORIENTATION}"
+        check("180° 翻转 drop-in", want_orient in orient,
+              f"99-orientation.conf 里有 {want_orient}" if want_orient in orient
+              else f"缺 {want_orient} —— 画面不会翻转")
+
     has_pwr = POWER_ENV in rules and "pm8941_pwrkey" in rules
     check("电源键标记", has_pwr,
           f"70-alioth.rules 给 pm8941_pwrkey 打了 {POWER_ENV}" if has_pwr
@@ -156,6 +202,25 @@ else:
         check("补丁版参数先探测", probed,
               f"{PATCHED_ONLY_ARG} 由 gamescope --help 探测后才用" if probed
               else f"无条件传了 {PATCHED_ONLY_ARG} —— 原版 gamescope 会直接退出")
+
+    # alioth 的 DSI 面板固定 60 Hz、没有 VRR。STEAM_GAMESCOPE_VRR_SUPPORTED=1
+    # 会让 Steam 走可变刷新率的 limiter 路径，在这块屏上表现为限帧无效；
+    # --adaptive-sync 同样不该传。动态 limiter 仍然开着。
+    fps_ok = ("STEAM_GAMESCOPE_DYNAMIC_FPSLIMITER=1" in session
+              and "STEAM_GAMESCOPE_VRR_SUPPORTED=0" in session
+              and "--adaptive-sync" not in session)
+    check("FPS limiter 不走 VRR", fps_ok,
+          "动态 limiter 开启、VRR 关闭、没有 --adaptive-sync" if fps_ok
+          else "VRR/adaptive-sync 仍开着，限帧会在这块 60 Hz 屏上失效")
+
+    # alioth 只有一块固定 60 Hz 面板；不要再给 Steam 一个 Refresh Rate 滑条。
+    # 这个值由 STEAM_DISPLAY_REFRESH_LIMITS 控制；旧的 user-manager 值也要清。
+    refresh_off = ('"Xiaomi Poco F3"' in session
+                   and "PANEL_60_ONLY=1" in session
+                   and "unset STEAM_DISPLAY_REFRESH_LIMITS" in session)
+    check("Refresh Rate 选项已禁用", refresh_off,
+          "alioth 走 60-only 分支并清除 STEAM_DISPLAY_REFRESH_LIMITS" if refresh_off
+          else "仍会给 Steam 一个无效的 Refresh Rate 滑条")
 
 
 # 9. NTP 服务器。Valve 镜像里 /etc/systemd/timesyncd.conf 的 [Time] 全是
@@ -338,6 +403,93 @@ spatial_off = '"steamos.spatial-node-config" = "disabled"' in wp_src
 nospatial_pm = 'permission_manager_name = "steamos-default-nospatial"' in wp_src
 check("关了空间音频就选 nospatial 权限管理器", spatial_off == nospatial_pm,
       f"spatial-node-config 被禁={spatial_off}，选了 nospatial 管理器={nospatial_pm}")
+
+# 10. Steam 的电源 UI。The handheld RUNSTEAM.sh makes Steam render the
+#     Performance page; Performance Profile, TDP and Manual GPU Clock are
+#     served by steamos-arm-power. There is no konkrd/odin3d, so the service
+#     applies the TDP-to-clock model itself; the device TOML is what makes the
+#     handheld client show the page.
+try:
+    power_src = io.open(POWER_SCRIPT, encoding="utf-8").read()
+    limits_src = io.open(POWER_LIMITS, encoding="utf-8").read()
+    service_src = io.open(POWER_SERVICE, encoding="utf-8").read()
+    remotes_src = io.open(POWER_REMOTES, encoding="utf-8").read()
+    policy_src = io.open(POWER_POLICY, encoding="utf-8").read()
+    device_src = io.open(DEVICE_TOML, encoding="utf-8").read()
+except OSError as exc:
+    check("power UI 文件齐全", False, f"读不到电源 UI 文件: {exc}")
+else:
+    check("power UI 文件齐全",
+          os.access(POWER_SCRIPT, os.X_OK) and bool(limits_src),
+          f"{POWER_SCRIPT} 可执行；power_limits.py 存在")
+    check("power UI 直接应用状态",
+          "apply_performance" in power_src and "power_limits.apply" in power_src,
+          "steamos-arm-power 调用 power_limits.apply()")
+    check("power UI 不再依赖 konkrd",
+          "systemctl" not in power_src and "import subprocess" not in power_src,
+          "没有 systemctl/HUP 设备守护进程的调用")
+    no_profiles = ("PerformanceProfile1" not in power_src
+                   and "[PerformanceProfile1]" not in remotes_src)
+    check("Performance Profiles 已移除", no_profiles,
+          "service 和 remotes 都不再暴露 PerformanceProfile1" if no_profiles
+          else "PerformanceProfile1 还在 —— 会和 TDP 滑条冲突")
+    check("power service 已启用",
+          os.path.islink(POWER_WANTS)
+          and os.path.realpath(POWER_WANTS) == os.path.realpath(POWER_SERVICE),
+          f"{POWER_WANTS} -> {os.path.realpath(POWER_WANTS)}")
+    check("power service D-Bus",
+          "Type=dbus" in service_src and "BusName=org.steamos_arm.Power" in service_src
+          and "Before=display-manager.service" in service_src,
+          "Type=dbus，Before=display-manager.service")
+    check("Steam power remotes",
+          "[TdpLimit1]" in remotes_src
+          and "[GpuPerformanceLevel1]" in remotes_src
+          and "[PerformanceProfile1]" not in remotes_src,
+          "remotes 只有 TDP 和 GPU clock")
+    check("D-Bus policy 允许 Power 名称",
+          'own="org.steamos_arm.Power"' in policy_src
+          and "send_destination=\"org.steamos_arm.Power\"" in policy_src,
+          "system bus 允许 root own，默认允许 send")
+    check("Steam 识别 alioth 掌机",
+          'dt.compatible = "xiaomi,alioth"' in device_src
+          and 'friendly_name = "Xiaomi Poco F3"' in device_src,
+          "device TOML 匹配 xiaomi,alioth —— handheld UI 才显示 Performance 页")
+
+# 11. Power button. The Frame image ignores the key in logind and delegates it
+#     to steamos-powerbuttond, which only opens Steam's power menu. That menu
+#     is unreliable here, so the button looks dead. A later logind drop-in
+#     makes it suspend directly (s2idle is supported and was measured).
+try:
+    logind_src = io.open(LOGIND_SUSPEND, encoding="utf-8").read()
+except OSError as exc:
+    check("电源键直接 suspend", False, f"读不到 {LOGIND_SUSPEND}: {exc}")
+else:
+    check("电源键直接 suspend",
+          "HandlePowerKey=suspend" in logind_src,
+          "99-alioth-suspend.conf 覆盖 Frame 的 HandlePowerKey=ignore")
+
+# 12. Swap file. 4 GiB zram (priority 100) first, then a 2 GiB /swapfile at
+#     priority 50. The file is created by a oneshot service before the swap unit;
+#     mkswap is skipped when the file already carries a swap signature.
+try:
+    swap_src = io.open(SWAP_SETUP, encoding="utf-8").read()
+    swap_service = io.open(SWAP_SERVICE, encoding="utf-8").read()
+    swap_unit = io.open(SWAP_UNIT, encoding="utf-8").read()
+except OSError as exc:
+    check("2 GiB swap file 已配置", False, f"读不到 swap 文件: {exc}")
+else:
+    swap_ok = ("SIZE_MB=2048" in swap_src
+               and "mkswap" in swap_src
+               and "blkid" in swap_src
+               and "ExecStart=/usr/lib/steamos-arm/alioth-swapfile-setup" in swap_service
+               and "What=/swapfile" in swap_unit
+               and "Priority=50" in swap_unit
+               and "Requires=alioth-swapfile-setup.service" in swap_unit
+               and os.path.islink(SWAP_WANTS)
+               and os.path.realpath(SWAP_WANTS) == os.path.realpath(SWAP_UNIT))
+    check("2 GiB swap file 已配置", swap_ok,
+          "setup + swapfile.swap + swap.target.wants 都已配置" if swap_ok
+          else "swap file 配置不完整")
 
 print()
 if fails:

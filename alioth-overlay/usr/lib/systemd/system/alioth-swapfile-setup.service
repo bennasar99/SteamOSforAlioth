@@ -1,0 +1,12 @@
+[Unit]
+Description=Create the alioth 2 GiB swap file
+After=local-fs.target
+Before=swapfile.swap
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/steamos-arm/alioth-swapfile-setup
+
+[Install]
+WantedBy=swap.target

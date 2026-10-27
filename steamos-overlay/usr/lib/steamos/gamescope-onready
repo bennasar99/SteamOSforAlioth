@@ -35,6 +35,12 @@ unset XDG_SESSION_TYPE || true
 # duplicate ("Invalid environment assignments"), and XDG_CURRENT_DESKTOP is
 # in both lists. That one duplicate kept every STEAM_GAMESCOPE_* flag and
 # ENABLE_GAMESCOPE_WSI away from Steam, so its frame limiter did nothing.
+# alioth/60-only: no refresh-rate slider. Clear a value left in the user
+# manager by an older session so steam.service does not inherit it.
+if [[ -z "${STEAM_DISPLAY_REFRESH_LIMITS:-}" ]]; then
+  systemctl --user unset-environment STEAM_DISPLAY_REFRESH_LIMITS >/dev/null 2>&1 || true
+fi
+
 inherit=()
 declare -A seen=()
 for v in DISPLAY GAMESCOPE_WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP \

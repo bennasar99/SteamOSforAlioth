@@ -1,0 +1,11 @@
+[Unit]
+Description=2 GiB alioth swap file
+Requires=alioth-swapfile-setup.service
+After=alioth-swapfile-setup.service
+
+[Swap]
+What=/swapfile
+Priority=50
+
+[Install]
+WantedBy=swap.target

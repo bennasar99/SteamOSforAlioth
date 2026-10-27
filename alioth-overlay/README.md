@@ -39,6 +39,62 @@ Flip 2 / Mini、MANGMI Air Y Pro / Pocket Max、AYN Thor Lite），与 alioth �
 | `usr/share/alsa/ucm2/conf.d/sm8250/xiaomi-alioth.conf` | UCM 入口，文件名 = 声卡名 |
 | `usr/lib/steamos-arm/alioth-firstboot` | 首次开机把根文件系统扩展到 106 GiB，然后标记 A/B successful |
 | `usr/lib/systemd/system/alioth-firstboot.service` | 上面那个脚本的 unit（+ `sysinit.target.wants/` 里的 enable 链接） |
+| `usr/lib/steamos-arm/steamos-arm-power` | Steam TDP / Manual GPU Clock 的 D-Bus 后端；alioth 没有 konkrd/odin3d，直接调用 `power_limits.apply()` |
+| `usr/lib/steamos-arm/power_limits.py` | TDP → CPU/GPU 频率的共享模型（sm8250 范围 3–10 W） |
+| `usr/lib/systemd/system/steamos-arm-power.service` | 上面那个服务的 unit（+ `multi-user.target.wants/` 的 enable 链接） |
+| `usr/share/steamos-manager/remotes.d/50-steamos-arm.toml` | 把 TdpLimit / GpuPerformanceLevel 转给 Steam 的 Quick Access |
+| `usr/share/steamos-manager/devices/xiaomi-alioth.toml` | 让 handheld Steam 客户端把 alioth 认成 SM8250 掌机，显示 Performance 页 |
+| `usr/share/dbus-1/system.d/org.steamos_arm.Power.conf` | 允许 root 在 system bus 上 own `org.steamos_arm.Power` |
+| `usr/lib/steamos-arm/alioth-swapfile-setup` | 创建 2 GiB `/swapfile`；已有 swap 签名时跳过 mkswap |
+| `usr/lib/systemd/system/swapfile.swap` | 2 GiB swapfile，priority 50（zram 是 100） |
+| `usr/lib/systemd/system/alioth-swapfile-setup.service` | 在 swapfile.swap 之前建文件 |
+| `etc/systemd/logind.conf.d/99-alioth-suspend.conf` | 电源键直接 suspend；覆盖 Frame 的 `HandlePowerKey=ignore` |
+| `etc/systemd/user/gamescope-session.service.d/99-orientation.conf` | USB-C 手柄在另一侧时的 180° 画面翻转 |
+| `usr/lib/udev/rules.d/71-alioth-flip.rules` | 与上面翻转配套的触摸校准矩阵 |
+
+### 电源 UI
+
+`steamos-arm-power` 实现 Steam 的 TDP 滑条和 Manual GPU Clock。TDP 是唯一的
+功耗控制（3–10 W），Manual GPU Clock 优先于 TDP 对 GPU 的上限。真机确认：
+换成 handheld `RUNSTEAM.sh` 后 UI 显示 TDP 限流生效；此前 Frame
+`RUNSTEAM.sh`（`-deckard -vrgamepadui`）只显示 GPU clock，是因为 Steam
+客户端把这个设备当成 Frame。
+
+**Performance Profiles 已移除**：Silent/Balanced/Turbo 预设会和 TDP 滑条
+互相覆盖，所以 service 和 remotes 都不再暴露 `PerformanceProfile1`。
+
+Refresh Rate 选项已移除：alioth 是固定 60 Hz 面板，`gamescope-session` 走
+60-only 分支并 `unset STEAM_DISPLAY_REFRESH_LIMITS`；`gamescope-onready` 还会
+清掉 user manager 里遗留的旧值。这样 Performance 页不再显示一个改不了任何
+东西的刷新率滑条。FPS 限流器本身仍未解决。
+
+`alioth-game-tune` 仍然只在游戏运行时切 `performance` governor，和这里的频率
+上限不冲突。电池充电上限/Bypass 没有暴露：`qcom_pm8150b_charger` 只暴露
+`current_max`，没有 `charge_control_end_threshold`，这部分留给
+`alioth-charge-guard`。
+
+### Swap
+
+4 GiB zram（LZ4，priority 100）先于磁盘；另有一个 2 GiB `/swapfile`
+（priority 50），由 `alioth-swapfile-setup` 在第一次启动时创建。zram 压力
+到上限后才落到 UFS 上的 swapfile。zram 的 lzo-rle/lz4/zstd 实测见
+`AGENS_new.md`：lzo-rle 和 LZ4 基本持平，zstd 压缩比更高但明显更慢。
+
+### 电源键
+
+`99-alioth-suspend.conf` 排在 Frame 的 `10-logind-no-powerbutton.conf` 之后，
+把 `HandlePowerKey` 从 `ignore` 改成 `suspend`。真机确认：按电源键立即
+s2idle，再按一次唤醒；不需要等空闲超时。`steamos-powerbuttond` 仍会尝试发
+`steam://powerpress`，但 logind 也能收到键；如果以后被它 grab，mask 该
+user service 即可。插着 USB 时 gadget/ttyGS0 是唤醒源，可能在充电状态下立刻
+醒来；确认的那次是电池供电。
+
+### 屏幕翻转
+
+`99-orientation.conf` 固定 `GAMESCOPE_ORIENTATION=left`，`71-alioth-flip.rules`
+把触摸矩阵改成翻转后的 `0 -1 1 1 0 0`。这是启动期参数：切换方向要重启
+gamescope，触摸设备也要重新打开。没有运行时的 Steam UI 开关；要加 UI 需要
+Decky 插件或一个非 Steam 快捷方式 + root helper。
 
 ## 这台机器上「没有按键」意味着什么
 

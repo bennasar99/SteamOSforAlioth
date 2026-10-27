@@ -1,0 +1,10 @@
+# The handheld Steam launcher renders the Performance page on alioth.
+# TDP and Manual GPU Clock are served here. Performance Profiles are
+# intentionally not advertised: the presets fought the TDP slider.
+[TdpLimit1]
+bus_name = "org.steamos_arm.Power"
+object_path = "/org/steamos_arm/Power"
+
+[GpuPerformanceLevel1]
+bus_name = "org.steamos_arm.Power"
+object_path = "/org/steamos_arm/Power"
