@@ -1,0 +1,15 @@
+[Unit]
+Description=Free RAM in marked Steam games by unloading Steam's CEF helper
+PartOf=gamescope-session.target
+After=steam.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/steamos-arm/alioth-steam-webhelper-offload
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=gamescope-session.target

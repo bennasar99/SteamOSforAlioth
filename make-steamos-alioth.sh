@@ -428,6 +428,14 @@ sudo env ALIOTH_ORIENTATION_FLIP="$ORIENTATION_FLIP" \
 echo "==> de-VR (session scripts + unit masks)"
 sudo "${PORT_ROOT}/scripts/apply-alioth-devr.sh" "$R"
 
+# 4a1. Desktop Mode. The Frame image starts Plasma through
+#      start-gamescope-session with Game Mode's xcb environment still set;
+#      plasmashell dies and the screen stays black. Install the upstream
+#      SM8550/SM8250 session (plasma.desktop -> sm8550-startplasma, prepare +
+#      desktop-outputs + desktop-fit) instead.
+echo "==> installing Desktop Mode session"
+sudo "${PORT_ROOT}/scripts/apply-alioth-desktop.sh" "$R"
+
 # 4a3. alioth has no DP alt mode and no VR headset; the de-VR layer masks
 #      every SteamVR unit, and no normal boot path calls /opt/steamvr. Keeping
 #      it is 1.37 GiB of dead weight, so drop it from the image. Keep

@@ -54,6 +54,9 @@ Flip 2 / Mini、MANGMI Air Y Pro / Pocket Max、AYN Thor Lite），与 alioth �
 | `etc/systemd/system/alioth-wifi-recover.service` | 热重启后若 `NetworkManager`/`iwd` 没起来，在 `steamos-manager` 之后补启动（+ `multi-user.target.wants/`） |
 | `usr/lib/steamos-arm/tablet-charger-hold` | 充电器插入开机时保持黑屏充电，短按显示大号电量，长按 1.5 s 启动 SteamOS |
 | `usr/lib/systemd/system/steamos-arm-tablet-charger.service` | 充电保持 unit，`xiaomi,alioth` 条件，display-manager 之前运行（+ `multi-user.target.wants/` enable 链接） |
+| `usr/lib/steamos-arm/alioth-steam-webhelper-offload` | 按游戏 `ALIOTH_UNLOAD_STEAMWEBHELPER=1` 标记卸载 Steam CEF，释放约 1 GB；等待 20 s 后卸下，退出时恢复 |
+| `usr/lib/systemd/user/alioth-steam-webhelper-offload.service` | Game Mode 用户服务，随 `gamescope-session.target` 启动 |
+| `etc/systemd/user/gamescope-session.target.d/99-zz-alioth-steam-webhelper-offload.conf` | 把上面的用户服务拉进 Game Mode；排在现有 target drop-in 之后 |
 | `etc/systemd/user/gamescope-session.service.d/99-orientation.conf` | Razer Kishi 专用：180° 画面翻转。可选；`make-steamos-alioth.sh --install` 会询问，`ALIOTH_ORIENTATION_FLIP=0` 可跳过 |
 | `usr/lib/udev/rules.d/71-alioth-flip.rules` | Razer Kishi 专用：与 99 成对启用的触摸矩阵；两者由同一个 `ALIOTH_ORIENTATION_FLIP` 开关控制 |
 

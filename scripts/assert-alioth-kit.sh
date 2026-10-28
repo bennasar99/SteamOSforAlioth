@@ -259,6 +259,33 @@ fi
   && pass "基础触摸矩阵" "70-alioth.rules present" \
   || fail "基础触摸矩阵" "70-alioth.rules missing"
 
+# 5e. Desktop Mode session. The Frame image started Plasma through
+#     start-gamescope-session with Game Mode's xcb environment; these files
+#     are the upstream SM8550/SM8250 fix.
+PLASMA="$MNT/usr/share/wayland-sessions/plasma.desktop"
+DESK_BAD=()
+[[ -f "$PLASMA" ]] && grep -q '^Exec=/usr/lib/steamos/sm8550-startplasma' "$PLASMA"   || DESK_BAD+=("plasma.desktop")
+for f in usr/lib/steamos/desktop-outputs usr/lib/steamos/sm8550-prepare-plasma          usr/lib/steamos/sm8550-startplasma usr/lib/steamos/desktop-steam          usr/lib/steamos-arm/desktop-fit usr/lib/steamos-arm/desktop-portal-fix; do
+  [[ -x "$MNT/$f" ]] || DESK_BAD+=("$f")
+done
+[[ -f "$MNT/usr/lib/systemd/user/sm8550-plasma-env.service" ]]   || DESK_BAD+=("sm8550-plasma-env.service")
+[[ -f "$MNT/usr/lib/systemd/user/plasma-core.target.d/99-odin.conf" ]]   || DESK_BAD+=("plasma-core.target.d")
+grep -q 'sm8550-prepare-plasma' "$MNT/usr/bin/steamos-session-select"   || DESK_BAD+=("steamos-session-select")
+grep -q '^Exec=/usr/lib/steamos/desktop-steam ' "$MNT/etc/xdg/autostart/steam.desktop"   || DESK_BAD+=("steam.desktop")
+grep -q '99-orientation.conf' "$MNT/usr/lib/steamos/desktop-outputs"   || DESK_BAD+=("desktop-outputs Kishi flip")
+grep -q 'KISHI_TOUCH_MATRIX' "$MNT/usr/lib/steamos/desktop-outputs"   || DESK_BAD+=("desktop-outputs Kishi touch")
+grep -q 'steamosctl switch-to-game-mode' "$MNT/etc/skel/Desktop/Return.desktop"   || DESK_BAD+=("Return.desktop")
+[[ -x "$MNT/etc/xdg/plasma-workspace/env/set-return-icon.sh" ]]   || DESK_BAD+=("set-return-icon.sh")
+[[ -f "$MNT/usr/share/icons/hicolor/scalable/apps/steamos-gamemode.svg" ]]   || DESK_BAD+=("steamos-gamemode.svg")
+[[ -f "$MNT/usr/share/applications/steamos-gamemode.desktop" ]]   || DESK_BAD+=("steamos-gamemode.desktop")
+for s in plasmax11.desktop openbox.desktop openbox-kde.desktop; do
+  [[ ! -e "$MNT/usr/share/xsessions/$s" && -e "$MNT/usr/share/steamos/hidden-xsessions/$s" ]]     || DESK_BAD+=("hide $s")
+done
+[[ -f "$MNT/usr/share/steamos-arm/kwinoutputconfig.legacy.json" ]]   || DESK_BAD+=("kwinoutputconfig.legacy.json")
+[[ ${#DESK_BAD[@]} -eq 0 ]] \
+  && pass "Desktop Mode 会话" "plasma.desktop + prepare/startplasma + drop-ins + autostart 齐全" \
+  || fail "Desktop Mode 会话" "缺失或不对: ${DESK_BAD[*]}"
+
 # 6. 首次开机哨兵。Task 7 的 alioth-firstboot 见不到它就什么都不做，
 #    于是根文件系统永远停在几 GB，而 Steam 第一次装游戏才报错。
 [[ -e "$MNT/var/lib/alioth-firstboot-pending" ]] \

@@ -61,6 +61,12 @@ MIGRATE_UNIT = os.path.join(
     OVL, "usr/lib/systemd/system/alioth-super-migrate.service")
 MIGRATE_WANTS = os.path.join(
     OVL, "usr/lib/systemd/system/basic.target.wants/alioth-super-migrate.service")
+LOWRAM_SCRIPT = os.path.join(
+    OVL, "usr/lib/steamos-arm/alioth-steam-webhelper-offload")
+LOWRAM_SERVICE = os.path.join(
+    OVL, "usr/lib/systemd/user/alioth-steam-webhelper-offload.service")
+LOWRAM_DROPIN = os.path.join(
+    OVL, "etc/systemd/user/gamescope-session.target.d/99-zz-alioth-steam-webhelper-offload.conf")
 DROPIN_DIR = os.path.join(OVL, "etc/systemd/user/gamescope-session.target.d")
 # steamos-overlay 的这个 drop-in 把 Wants= 清空后只留 steam 那三个，所以我们
 # 加 Wants= 的 drop-in 必须按文件名排在它**后面**。见下面第 7 条。
@@ -540,6 +546,36 @@ else:
     check("充电屏已进 alioth-overlay", charger_ok,
           "脚本、alioth unit、enable 链接都在；含 watchdog" if charger_ok
           else "充电屏配置不完整或缺少 enable 链接")
+
+# 11d. Per-game low-RAM mode. The marker opts a game in; the user service must
+#      be pulled in by the Game Mode target, and the script must keep the 20 s
+#      settle delay plus the post-restore Steam recovery. A missing wrapper
+#      restore or recovery is the difference between "more free RAM" and a
+#      frozen Game Mode after the game exits.
+try:
+    lowram_src = io.open(LOWRAM_SCRIPT, encoding="utf-8").read()
+    lowram_unit = io.open(LOWRAM_SERVICE, encoding="utf-8").read()
+    lowram_dropin = io.open(LOWRAM_DROPIN, encoding="utf-8").read()
+except OSError as exc:
+    check("低内存模式已进 source", False, f"读不到低内存模式文件: {exc}")
+else:
+    lowram_ok = (
+        os.access(LOWRAM_SCRIPT, os.X_OK)
+        and "ALIOTH_UNLOAD_STEAMWEBHELPER=1" in lowram_src
+        and "SETTLE_SECONDS = 20" in lowram_src
+        and "steamwebhelper.sh" in lowram_src
+        and "alioth-offload.bak" in lowram_src
+        and "restart_steam_if_needed" in lowram_src
+        and "systemctl" in lowram_src
+        and "PartOf=gamescope-session.target" in lowram_unit
+        and "After=steam.service" in lowram_unit
+        and "ExecStart=/usr/lib/steamos-arm/alioth-steam-webhelper-offload" in lowram_unit
+        and "Restart=on-failure" in lowram_unit
+        and "Wants=alioth-steam-webhelper-offload.service" in lowram_dropin
+    )
+    check("低内存模式已进 source", lowram_ok,
+          "脚本 + user unit + gamescope target drop-in 都在" if lowram_ok
+          else "低内存模式配置不完整")
 
 # 12. Swap file. 3.5 GiB zram (priority 100) first, then a 2 GiB /swapfile at
 #     priority 50. The file is created by a oneshot service before the swap unit;

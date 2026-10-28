@@ -62,6 +62,17 @@ Do not confuse the two:
   (`99-orientation.conf` + `71-alioth-flip.rules`); picture and touch are
   confirmed correct. Without a Razer Kishi, remove both and keep the
   unmodified orientation.
+- The source tree now installs the SteamOS-ARM **Desktop Mode** session:
+  `plasma.desktop -> sm8550-startplasma`, which runs `sm8550-prepare-plasma`
+  (clears Game Mode xcb/env), `desktop-outputs`, `desktop-fit`, then
+  `startplasma-wayland`. It also installs the new `steamos-session-select`,
+  `desktop-steam` autostart redirect, portal-fix autostart and the plasma
+  target/service drop-ins. The running phone still has Valve's old
+  `plasma.desktop`/`steamos-session-select` until the next rebuild or manual
+  deploy.
+- The low-RAM per-game Steam mode is now in `alioth-overlay`: the watcher
+  script, a `gamescope-session.target` user service, and the target drop-in.
+  See "Low-RAM per-game Steam mode" below.
 
 ## Crash investigation (2026-10-27)
 
@@ -491,6 +502,9 @@ steamos-overlay/usr/lib/systemd/zram-generator.conf.d/60-steamos-arm-zram.conf
 scripts/assert-alioth-flash.sh
 scripts/assert-alioth-kit.sh
 scripts/assert-alioth-overlay-applied.sh              # both Kishi flip modes
+scripts/apply-alioth-desktop.sh                       # Desktop Mode session
+scripts/assert-alioth-desktop.sh                      # Desktop Mode session checks
+steamos-overlay/usr/lib/steamos/desktop-outputs       # Kishi-aware KWin transform
 ```
 
 Untracked deployment artifacts (git-ignored under `work/`):
@@ -591,6 +605,173 @@ sudo systemctl start gpu-trace.service steamos-log-submitter.service
   `assert-alioth-overlay.py` pass. The overlay-applied test runs both the
   default orientation pair and `ALIOTH_ORIENTATION_FLIP=0` (both files
   skipped, base `70-alioth.rules` kept).
+
+## Done: low-RAM per-game Steam mode (2026-10-28)
+
+Confirmed on the phone with **Tomb Raider** (AppID 203160). This is a
+per-game opt-in: only games with the marker in Steam's launch options unload
+Steam's CEF helper. The mode is now part of `alioth-overlay`, so a normal
+image build includes it.
+
+Launch option:
+
+```text
+ALIOTH_UNLOAD_STEAMWEBHELPER=1 %command%
+```
+
+Mechanism:
+
+- A user watcher scans `/proc/*/environ` for
+  `ALIOTH_UNLOAD_STEAMWEBHELPER=1`.
+- It waits **20 seconds** after the marked game starts. Three seconds was too
+  early: the game exited while it was still initialising.
+- It then backs up and replaces
+  `~/.local/share/Steam/steamrtarm64/steamwebhelper.sh` with a dummy, and
+  terminates the running `steamwebhelper` processes.
+- When the marked game exits, it restores the original `steamwebhelper.sh`.
+  Steam does not always recreate the helper by itself; the watcher waits two
+  seconds and, if no helper appeared, runs
+  `systemctl --user restart steam.service`.
+- The Steam restart is what fixed the observed post-game freeze: without it,
+  the Steam main process stayed alive with no CEF UI, leaving Game Mode
+  frozen.
+
+Measured with Tomb Raider:
+
+- Normal helper state: `steamwebhelper` roughly 1.4-1.5 GB total RSS; free
+  memory around 150-190 MB with the game running.
+- With the helper unloaded: roughly 1.0-1.2 GB free; Tomb Raider continued
+  running.
+- The watcher itself uses about 12 MB RSS.
+
+Important limitation: **Steam overlay and Quick Access/Performance tabs are
+not available while the helper is unloaded.** The game still runs, but the
+Steam UI, performance tab, and related overlay panels cannot be used in this
+mode. This is acceptable only for games where the extra RAM matters more than
+the overlay.
+
+Source files:
+
+```text
+alioth-overlay/usr/lib/steamos-arm/alioth-steam-webhelper-offload
+alioth-overlay/usr/lib/systemd/user/alioth-steam-webhelper-offload.service
+alioth-overlay/etc/systemd/user/gamescope-session.target.d/99-zz-alioth-steam-webhelper-offload.conf
+```
+
+The marker is stored in `localconfig.vdf` per game; no game files are changed.
+The user service starts with `gamescope-session.target`, waits 20 s, swaps
+`steamwebhelper.sh` with a dummy, and unloads CEF. On game exit it restores
+the wrapper and restarts `steam.service` if Steam did not recreate the helper.
+
+`scripts/assert-alioth-overlay.py` checks the script, unit, target drop-in,
+20 s delay, wrapper restore, and Steam recovery. `scripts/apply-alioth-overlay.sh`
+installs all three files, and `make-steamos-alioth.sh --install` calls that
+script.
+
+Do not make it global. It remains per-game because the loss of Steam overlay
+and Quick Access is a real trade-off, not a free improvement.
+
+## 2026-10-28: Desktop Mode fix applied (source)
+
+The upstream `hashtagbasit/SteamOS-ARM-Port` SD865/SM8250 image does not use
+the Frame's `plasma.desktop -> start-gamescope-session plasma-session.target`.
+It installs the generic Desktop Mode set from `steamos-overlay` and
+`apply-overlays.sh`:
+
+- `usr/share/wayland-sessions/plasma.desktop` -> `sm8550-startplasma`
+- `sm8550-startplasma` -> `sm8550-prepare-plasma` + `desktop-outputs` +
+  `desktop-fit` + `startplasma-wayland`
+- `sm8550-prepare-plasma` clears `QT_QPA_PLATFORM=xcb`,
+  `ENABLE_GAMESCOPE_WSI` and the other Game Mode variables; without it
+  plasmashell dies and the panel stays black.
+- `steamos-session-select` now calls `sm8550-prepare-plasma` before
+  `steamosctl switch-to-desktop-mode`.
+- `desktop-steam` redirects the Desktop Steam autostart; `desktop-fit`
+  sizes the desktop for the panel; `desktop-portal-fix` starts after Plasma.
+- `sm8550-plasma-env.service` and the `plasma-*` target/service drop-ins
+  prepare the user manager.
+- "Return to Gaming Mode" is installed as `/etc/skel/Desktop/Return.desktop`,
+  copied to `~/Desktop` by the plasma-workspace env script, and also exposed
+  as an application-menu entry. Its Exec tries `steamosctl`, then
+  `steamos-session-select gamescope`, then a KDE logout.
+
+The files were already present in `steamos-overlay` and were byte-identical
+to upstream. The missing piece was installation: `scripts/apply-alioth-desktop.sh`
+now installs them, backs up the Frame originals under
+`/var/lib/steamos-arm-stock`, redirects `steam.desktop`, hides the X11
+`plasmax11`/`openbox` sessions, and installs the legacy KWin layout.
+
+Alioth adaptation: `desktop-outputs` now reads
+`/etc/systemd/user/gamescope-session.service.d/99-orientation.conf`. When the
+opt-in Razer Kishi flip is installed, it rotates the KWin transform 180
+(`Rotated270` <-> `Rotated90`) so the picture agrees with the global
+`71-alioth-flip.rules` touch matrix. Without the marker it uses the normal
+panel orientation.
+
+Touch needed a second fix: KWin does not read the udev matrix in Desktop
+Mode; it reads its own `CalibrationMatrix` from `~/.config/kcminputrc`. With
+the flipped picture the udev 270-degree matrix mirrored the 2400 axis, so
+`desktop-outputs` now writes a KWin-only `CalibrationMatrix` for this panel:
+identity (`1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1`) when the Kishi marker is
+present, and the 180-degree counterpart
+(`-1,0,1,0,0,-1,1,0,0,0,1,0,0,0,0,1`) without it. That follows the optional
+orientation: KWin is Rotated90 with the flip and Rotated270 without it. An
+existing user calibration is kept. The udev rule is unchanged, so Game Mode
+touch is untouched.
+
+Source files:
+
+```text
+scripts/apply-alioth-desktop.sh
+scripts/assert-alioth-desktop.sh
+steamos-overlay/usr/lib/steamos/desktop-outputs     # Kishi flip + touch calibration
+steamos-overlay/etc/skel/Desktop/Return.desktop    # Return to Game Mode shortcut
+steamos-overlay/etc/xdg/plasma-workspace/env/set-return-icon.sh
+steamos-overlay/usr/share/icons/hicolor/scalable/apps/steamos-gamemode.svg
+make-steamos-alioth.sh                             # calls apply-alioth-desktop.sh
+scripts/assert-alioth-kit.sh                       # installed-image checks
+```
+
+### Live verification (2026-10-28, 192.168.1.33)
+
+The working-tree files were deployed to the running phone and
+`steamos-session-select plasma` was run. `sddm-helper` launched
+`sm8550-startplasma`; `startplasma-wayland`, `kwin_wayland` and `plasmashell`
+are running. `gamescope-session.service` is inactive;
+`plasma-core/workspace/plasmashell` targets are active. Desktop Mode reaches
+the Plasma workspace and the `desktop-steam` autostart starts Steam.
+
+`~/.config/kwinoutputconfig.json` reports DSI-1 1080x2400@120,
+`transform: "Rotated90"` (the Razer Kishi flip marker was present), and
+`scale: 2`.
+
+For the desktop-only touch correction, KWin's `CalibrationMatrix` was set to
+identity (`1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1`) through its D-Bus property; KWin
+persisted it in `~/.config/kcminputrc`. The user confirmed center and all four
+directions are correct in Desktop Mode. The udev
+`LIBINPUT_CALIBRATION_MATRIX` remains the Kishi matrix, so Game Mode is
+unchanged.
+
+The "Return to Gaming Mode" shortcut was deployed to `/etc/skel`, the
+plasma-workspace env directory, and the running user's `~/Desktop`; the icon
+is linked into the user's hicolor theme. It is clickable in Desktop Mode.
+
+Non-fatal noise: `firewall-applet` lacks PyQt6/PyQt5; `desktop-steam` logs
+XOpenIM/XRRGetOutputInfo warnings; `udisksd` emits two
+`g_variant_ref_sink` assertions. None of them stopped Plasma or Steam.
+
+### Pending
+
+- Rebuild/flash so the source changes are in the install image; the live
+  phone currently has the files copied in, not a rebuilt userdata image.
+- The Razer Kishi Desktop touch is confirmed correct. Check the no-flip
+  Desktop path too: the source expects the 180-degree `BASE_TOUCH_MATRIX`
+  when `99-orientation.conf` is absent. Game Mode continues to use the udev
+  `70`/`71` matrices.
+- `desktop-fit` chose scale 2.0 (logical 1200x540) and 120 Hz on this panel;
+  change in System Settings if it is too large or too power-hungry.
+- Plasma extras such as `plasma-nm`, `kscreen` and the touch keyboard may
+  still be missing; they affect Desktop settings, not the session start.
 
 ## Pending investigation: volume buttons as volume + power chords
 

@@ -19,6 +19,7 @@
 
 <p align="center">
   <a href="#for-agents">For AI agents</a> ·
+  <a href="#fork-additions">Fork additions</a> ·
   <a href="#what-works">What works</a> ·
   <a href="#screenshots">Screenshots</a> ·
   <a href="#build-it">Build it</a> ·
@@ -83,6 +84,84 @@ and its symptom, and every one of them is written up in the docs.
   run if they fail, refuses to write the slot the phone currently boots from,
   and keeps every line of code that can touch `userdata` inside one marked
   region that the kernel-iteration path cannot reach.
+
+<a id="fork-additions"></a>
+
+## What this fork adds
+
+Compared with the original [`ShouChenICU/SteamOSforAlioth`](https://github.com/ShouChenICU/SteamOSforAlioth)
+port, this fork keeps the same boot/kernel approach and adds the device work
+needed for daily handheld use:
+
+| Area | Main additions |
+|---|---|
+| Performance | Steam TDP slider and Manual GPU Clock; `alioth-game-tune` applies CPU/GPU `performance` only while a game runs; power-button suspend; fixed 60 Hz Game Mode profile |
+| Memory / storage | 3.5 GiB `lzo-rle` zram plus a 2 GiB swap file; optional migration of read-only system data to `super` for more free `userdata`; unused Frame/SteamVR services removed |
+| Display / input | Optional Razer Kishi 180° picture+touch flip; Desktop Mode Plasma session fixes; fixed 60 Hz profile instead of an unusable refresh-rate slider |
+| Connectivity | `alioth-wifi-recover.service` restarts NetworkManager/iwd after a warm reboot when `steamos-manager` leaves them down |
+| Charging | Charger-mode hold: dark boot, charge screen, lowest CPU/GPU clocks, short-press battery display, hold Power to start SteamOS, unplug to power off |
+| Build / safety | English build and flash scripts; sparse `userdata.img`; expanded assertion coverage; optional extra-storage migration and Kishi flip prompts |
+| Low RAM | Per-game `ALIOTH_UNLOAD_STEAMWEBHELPER=1 %command%` mode: frees roughly 1 GB by unloading Steam CEF; included in the image as a user service, but Steam overlay/Quick Access/Performance tabs are unavailable while active |
+
+### Handheld performance
+
+The Steam Quick Access menu now exposes **TDP** and **Manual GPU Clock**
+instead of the old performance profiles. The TDP value is translated into
+CPU/GPU frequency caps by `steamos-arm-power`/`power_limits.py`. A separate
+`alioth-game-tune` service raises the CPU and GPU governors only while a
+Steam game scope exists, so idle use does not stay pinned at performance
+clocks. The power button is wired to suspend, and the 60 Hz panel is exposed
+without a fake refresh-rate slider.
+
+### Memory and storage
+
+The source tree changes zram to **3.5 GiB with `lzo-rle`** and adds a **2 GiB
+`/swapfile`** at lower priority. The optional `boot-migrate.img` path moves
+static read-only system data to the Android `super` partition, freeing
+`userdata` at the cost of destroying Android's system images. Frame-only
+services (`gpu-trace`, `iris-driver-rebind`, `steamos-log-submitter`) and
+`/opt/steamvr` are removed or masked.
+
+### Display, input, and Desktop Mode
+
+The Razer Kishi 180° flip is an opt-in pair: `99-orientation.conf` rotates the
+picture and `71-alioth-flip.rules` rotates touch. Desktop Mode is fixed to
+start the Plasma Wayland session through `sm8550-startplasma`, with the
+alioth-specific output, fit, portal, and KWin touch handling installed by the
+build.
+
+### Charging
+
+A charger-insertion boot now enters a charger hold instead of immediately
+booting SteamOS. The hold runs before the display manager, blanks the panel,
+clamps CPU/GPU to their lowest clocks, shows a large battery/charge screen on
+a short Power press, starts SteamOS when Power is held, and powers off when
+the charger is removed.
+
+### Build and verification
+
+The build and flash scripts are fully English, produce a sparse
+`userdata.img`, ask separately about extra storage and the Kishi flip, and
+run an expanded assertion suite covering the boot image, overlays, zram,
+swap, charger hold, Wi-Fi recovery, and Desktop Mode.
+
+### Low-RAM per-game mode
+
+The image includes a per-game low-RAM mode. Add this to a game's Steam launch
+options:
+
+```text
+ALIOTH_UNLOAD_STEAMWEBHELPER=1 %command%
+```
+
+A `gamescope-session.target` user service waits 20 seconds for the game to
+settle, swaps in a dummy `steamwebhelper.sh`, and unloads Steam's CEF helper.
+When the game exits it restores the wrapper and restarts `steam.service` if
+Steam failed to recreate the helper. On Tomb Raider this freed about 1 GB.
+**Steam overlay, Quick Access, and the Performance tab are unavailable while
+the helper is unloaded**, so this is opt-in per game rather than a global
+default. See [`AGENS_new.md`](AGENS_new.md) for the test notes and source
+paths.
 
 <a id="status"></a>
 

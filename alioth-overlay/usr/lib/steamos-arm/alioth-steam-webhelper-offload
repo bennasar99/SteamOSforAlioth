@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Free RAM during selected games by unloading Steam's CEF helper.
+
+Opt in per game by putting this in Steam > game > Properties > Launch Options:
+
+    ALIOTH_UNLOAD_STEAMWEBHELPER=1 %command%
+
+The watcher runs as a user service for the whole Game Mode session.  It waits
+20 seconds after the marked game starts, swaps steamwebhelper.sh for a dummy,
+and terminates the running CEF processes.  When the game exits it restores the
+real wrapper.  Steam does not always recreate the helper on its own, so if the
+helper is still missing two seconds later it restarts steam.service.
+
+While this mode is active the Steam overlay, Quick Access menu, and Performance
+tab are unavailable.  That is the trade-off for freeing roughly 1 GB on a 6 GB
+phone.
+"""
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+MARKER = b"ALIOTH_UNLOAD_STEAMWEBHELPER=1\0"
+SETTLE_SECONDS = 20
+POLL_SECONDS = 2
+RESTORE_GRACE_SECONDS = 2
+
+
+def log(message):
+    print(f"alioth-steam-webhelper-offload: {message}", flush=True)
+
+
+def steam_root():
+    for candidate in (Path.home() / "devkit-game/steam",
+                      Path.home() / ".local/share/Steam"):
+        if (candidate / "steamrtarm64/steamwebhelper.sh").is_file():
+            return candidate
+    return None
+
+
+def marker_pids():
+    pids = []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit() or int(proc.name) == os.getpid():
+            continue
+        try:
+            environ = (proc / "environ").read_bytes()
+        except OSError:
+            continue
+        if MARKER in environ:
+            pids.append(int(proc.name))
+    return pids
+
+
+def helper_pids():
+    pids = []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            comm = (proc / "comm").read_text().strip()
+        except OSError:
+            continue
+        if comm == "steamwebhelper":
+            pids.append(int(proc.name))
+    return pids
+
+
+def stop_helpers():
+    for pid in helper_pids():
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
+class Offload:
+    def __init__(self):
+        self.root = steam_root()
+        self.wrapper = None
+        self.backup = None
+        if self.root is not None:
+            self.wrapper = self.root / "steamrtarm64/steamwebhelper.sh"
+            self.backup = self.wrapper.with_name("steamwebhelper.sh.alioth-offload.bak")
+        self.active = False
+
+    def restore(self):
+        if self.wrapper is None or self.backup is None:
+            return
+        try:
+            if self.backup.exists():
+                os.replace(self.backup, self.wrapper)
+                os.chmod(self.wrapper, 0o755)
+                log("restored steamwebhelper.sh")
+        except OSError as exc:
+            log(f"could not restore steamwebhelper.sh: {exc}")
+
+    def restart_steam_if_needed(self):
+        if helper_pids():
+            return
+        log("Steam helper is absent; restarting steam.service")
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "restart", "steam.service"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log(f"steam.service restart failed: {exc}")
+
+    def unload(self):
+        if self.wrapper is None or self.backup is None:
+            log("Steam ARM root not found")
+            return False
+        try:
+            if not self.backup.exists():
+                shutil.copy2(self.wrapper, self.backup)
+            self.wrapper.write_text(
+                "#!/bin/sh\n# alioth: CEF disabled while a marked game runs\n"
+                "exec sleep infinity\n"
+            )
+            os.chmod(self.wrapper, 0o755)
+            stop_helpers()
+            log("unloaded steamwebhelper")
+            return True
+        except OSError as exc:
+            log(f"could not unload steamwebhelper: {exc}")
+            self.restore()
+            return False
+
+
+def main():
+    offload = Offload()
+    offload.restore()
+    log(f"watch started root={offload.root}")
+
+    def cleanup(_signum=None, _frame=None):
+        if offload.active:
+            offload.restore()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+
+    while True:
+        pids = marker_pids()
+        if not offload.active and pids:
+            log(f"marked game pids={pids}; waiting {SETTLE_SECONDS}s")
+            time.sleep(SETTLE_SECONDS)
+            pids = marker_pids()
+            if pids:
+                offload.active = offload.unload()
+        elif offload.active:
+            if not pids:
+                offload.restore()
+                offload.active = False
+                time.sleep(RESTORE_GRACE_SECONDS)
+                offload.restart_steam_if_needed()
+            else:
+                stop_helpers()
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

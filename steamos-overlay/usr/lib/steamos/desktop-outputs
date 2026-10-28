@@ -38,6 +38,22 @@ LEGACY = Path("/usr/share/steamos-arm/kwinoutputconfig.legacy.json")
 TRANSFORM = {"normal": "Normal", "upside-down": "Rotated180",
              "left-up": "Rotated90", "right-up": "Rotated270"}
 
+# alioth's Razer Kishi flip is a paired render+touch 180-degree rotation.
+# 99-orientation.conf is installed only when that flip is enabled; 71-alioth-
+# flip.rules then rotates the touch matrix globally. KWin must use the
+# opposite transform so the picture and the touch agree in Desktop Mode.
+FLIP_MARKER = Path("/etc/systemd/user/gamescope-session.service.d/99-orientation.conf")
+OPPOSITE = {"Normal": "Rotated180", "Rotated180": "Normal",
+            "Rotated90": "Rotated270", "Rotated270": "Rotated90"}
+
+# The udev calibration matrix is for gamescope. KWin reads its own
+# CalibrationMatrix from kcminputrc. The Kishi flip chooses Rotated90 and
+# needs no extra KWin calibration (identity); without the flip the same
+# panel is Rotated270, so the KWin calibration is the 180-degree counterpart.
+# Game Mode keeps using the udev rule, so this cannot change gaming-mode touch.
+KISHI_TOUCH_MATRIX = "1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1"
+BASE_TOUCH_MATRIX = "-1,0,1,0,0,-1,1,0,0,0,1,0,0,0,0,1"
+
 # Second-panel touchscreens by model (same names gamescope-session ignores).
 SECONDARY_TOUCH = {
     "AYN Thor": "bottom_touchscreen",
@@ -67,11 +83,13 @@ def panels() -> list[dict]:
 
 def transform(p: dict) -> str:
     t = TRANSFORM.get(p["orientation"])
-    if t:
-        return t
-    # No orientation property: a portrait panel in a landscape handheld,
-    # same guess gamescope makes.
-    return "Rotated270" if p["width"] < p["height"] else "Normal"
+    if not t:
+        # No orientation property: a portrait panel in a landscape handheld,
+        # same guess gamescope makes.
+        t = "Rotated270" if p["width"] < p["height"] else "Normal"
+    if FLIP_MARKER.exists():
+        t = OPPOSITE[t]
+    return t
 
 
 def scale(p: dict) -> float:
@@ -193,6 +211,68 @@ def map_touch(found: list[dict]) -> None:
                               for g, o in groups.items()))
 
 
+def kcminput_group(name: str, vid: int, pid: int) -> str:
+    return f"[Libinput][{vid}][{pid}][{name}]"
+
+
+def apply_touch_calibration() -> None:
+    """Write the KWin touch calibration for this panel.
+
+    KWin's CalibrationMatrix is a 16-float QMatrix4x4 read from kcminputrc.
+    The udev matrix (used by gamescope) stays untouched. With the Kishi flip
+    the KWin output is Rotated90 and no extra calibration is needed; without
+    the flip it is Rotated270, whose touch counterpart is the 180-degree
+    matrix. If the user calibrated the touchscreen through System Settings,
+    that value is kept.
+    """
+    if "Poco F3" not in model():
+        return
+    groups = {kcminput_group(name, vid, pid) for name, vid, pid in touchscreens()}
+    if not groups:
+        return
+
+    matrix = KISHI_TOUCH_MATRIX if FLIP_MARKER.exists() else BASE_TOUCH_MATRIX
+    ours = {KISHI_TOUCH_MATRIX, BASE_TOUCH_MATRIX}
+    key = f"CalibrationMatrix={matrix}"
+
+    lines = KCMINPUT.read_text().splitlines() if KCMINPUT.exists() else []
+    blocks: list[tuple[str | None, list[str]]] = []
+    header: str | None = None
+    body: list[str] = []
+    for line in lines:
+        if line.startswith("["):
+            blocks.append((header, body))
+            header, body = line.strip(), []
+        else:
+            body.append(line)
+    blocks.append((header, body))
+
+    for block_header, block_body in list(blocks):
+        if block_header not in groups:
+            continue
+        replaced = False
+        for i, line in enumerate(block_body):
+            if line.startswith("CalibrationMatrix="):
+                if line.split("=", 1)[1] in ours:
+                    block_body[i] = key
+                replaced = True
+                break
+        if not replaced:
+            block_body.insert(0, key)
+
+    for group in groups:
+        if not any(h == group for h, _ in blocks):
+            blocks.append((group, [key]))
+
+    out: list[str] = []
+    for block_header, block_body in blocks:
+        if block_header is not None:
+            out.append(block_header)
+        out.extend(block_body)
+    KCMINPUT.parent.mkdir(parents=True, exist_ok=True)
+    KCMINPUT.write_text("\n".join(out).rstrip() + "\n")
+
+
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else ""
 
@@ -223,6 +303,7 @@ def main() -> int:
     if not found:
         log("no panels found, leaving KWin's config alone")
         return 0
+    apply_touch_calibration()
     current = digest(KWIN_OUTPUTS)
     ours = STAMP.read_text().strip() if STAMP.exists() else ""
     legacy = digest(LEGACY) if LEGACY.exists() else ""
