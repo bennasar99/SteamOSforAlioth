@@ -1,0 +1,20 @@
+[Unit]
+Description=Move static SteamOS data and swap to the Android system partition (one-time)
+# Only the boot-migrate image carries this token; a normal install never runs
+# this unit. The rootfs sentinel makes it one-time even though the token
+# stays in the boot image.
+ConditionKernelCommandLine=alioth.supermigrate=1
+ConditionPathExists=!/var/lib/alioth-super-migrated
+DefaultDependencies=no
+After=alioth-firstboot.service sysinit.target local-fs.target
+Before=basic.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/steamos-arm/alioth-super-migrate
+# The first boot copies about 4.5 GiB to the new filesystem.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=basic.target

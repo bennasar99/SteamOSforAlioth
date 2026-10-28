@@ -12,6 +12,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MAKE="${ROOT}/make-steamos-alioth.sh"
 WORKDIR="${STEAMOS_WORK:-${ROOT}/work}"
+HOST_TOOLS="${WORKDIR}/host-tools/usr/bin"
+if [[ -d "$HOST_TOOLS" ]]; then
+  PATH="${HOST_TOOLS}:$PATH"
+fi
 # make-steamos-alioth.sh 里 OUT 就是这个，没有单独的 STEAMOS_KIT ——
 # 两边必须用同一个式子，否则 A 组构建的和 B 组检查的不是同一个目录。
 KIT="${WORKDIR}/steamos-alioth"
@@ -40,7 +44,7 @@ echo "--- A. 不需要 kit ---"
 
 # 1. 不带参数仍打印用法并退出非零。阶段 1 就是这个行为，不许回归。
 out="$("$MAKE" 2>&1)"; rc=$?
-if [[ $rc -ne 0 ]] && grep -q '用法' <<<"$out"; then
+if [[ $rc -ne 0 ]] && grep -qE '用法|usage' <<<"$out"; then
   pass "用法" "不带参数退出 $rc 并打印用法"
 else
   fail "用法" "退出 $rc，输出: ${out:0:120}"
@@ -118,6 +122,15 @@ else
   fail "--kernel-only 可复现" "--kernel-only 跑不出 boot-debug.img"
 fi
 
+# 2b. SteamVR is dead weight on alioth: the de-VR layer masks every SteamVR
+#     unit and no normal boot path calls /opt/steamvr. The build must drop it
+#     from the image instead of shipping 1.37 GiB that can never run.
+if grep -q 'rm -rf "$R/opt/steamvr"' "$MAKE"; then
+  pass "SteamVR 已从镜像删除" "make 脚本删除 /opt/steamvr"
+else
+  fail "SteamVR 已从镜像删除" "make 脚本没有删除 /opt/steamvr —— 白占 1.37 GiB"
+fi
+
 echo
 echo "--- B. 需要 kit（${KIT}）---"
 
@@ -125,6 +138,21 @@ UD="${KIT}/userdata.img"
 if [[ ! -s "$UD" ]]; then
   fail "kit 已构建" "没有 $UD —— 先跑 ./make-steamos-alioth.sh --install"
   echo; echo "${fails} 条断言失败"; exit 1
+fi
+
+# 2c. The normal install and the opt-in migration use different boot images.
+#     boot-migrate.img must exist, carry the migration token, and pass the
+#     same structural gate as boot.img.
+MI="${KIT}/boot-migrate.img"
+if [[ -s "$MI" ]]; then
+  if grep -aq 'alioth.supermigrate=1' "$MI" \
+     && ALIOTH_BOOT_IMAGE="$MI" "$ROOT/scripts/assert-alioth-boot-image.sh" >/dev/null 2>&1; then
+    pass "迁移 boot 镜像" "boot-migrate.img 带有 alioth.supermigrate=1 且结构断言通过"
+  else
+    fail "迁移 boot 镜像" "boot-migrate.img 缺 token 或结构断言失败"
+  fi
+else
+  fail "迁移 boot 镜像" "缺 ${MI} —— 先跑 ./make-steamos-alioth.sh --install"
 fi
 
 # 3. 文件系统格式。fastboot 认 raw ext4 和 Android sparse 两种；别的都刷不进去。
@@ -184,6 +212,52 @@ if [[ -f "$MNT/etc/fstab" ]]; then
 else
   fail "fstab 不写死设备名" "镜像里没有 /etc/fstab"
 fi
+
+# 5b. SteamVR runtime must not be in the image. It is 1.37 GiB that the
+#     de-VR layer can never start; the build deletes it.
+[[ ! -e "$MNT/opt/steamvr" ]] \
+  && pass "SteamVR 不在镜像里" "/opt/steamvr 已删除" \
+  || fail "SteamVR 不在镜像里" "/opt/steamvr 还在 —— 白占 1.37 GiB"
+
+# 5c. Frame/SM8550 leftovers must be masked in the installed image, and no
+#     unit may hard-Require them. steamos-manager only Wants the log submitter,
+#     which is a weak dependency; masking the daemon leaves the udev hooks and
+#     the manager working.
+leftovers=(gpu-trace.service iris-driver-rebind.service steamos-log-submitter.service)
+leftbad=()
+for u in "${leftovers[@]}"; do
+  [[ "$(readlink "$MNT/etc/systemd/system/$u" 2>/dev/null)" == /dev/null ]] || leftbad+=("$u")
+done
+[[ ${#leftbad[@]} -eq 0 ]] \
+  && pass "Frame 遗留 unit 已 mask" "gpu-trace / iris-driver-rebind / steamos-log-submitter" \
+  || fail "Frame 遗留 unit 已 mask" "未 mask: ${leftbad[*]}"
+reqbad=()
+for u in "${leftovers[@]}"; do
+  if grep -rqE "^[[:space:]]*Requires=.*${u%.service}" \
+       "$MNT/usr/lib/systemd/system" "$MNT/etc/systemd/system" 2>/dev/null; then
+    reqbad+=("$u")
+  fi
+done
+[[ ${#reqbad[@]} -eq 0 ]] \
+  && pass "没有 hard Requires 这些遗留 unit" "只有 steamos-manager 的 Wants= 弱依赖" \
+  || fail "没有 hard Requires 这些遗留 unit" "出现了 Requires: ${reqbad[*]}"
+
+# 5d. The Razer Kishi 180-degree flip is a pair. Either both halves are in
+#     the image or neither; installing only one leaves picture or touch
+#     rotated. The base 70-alioth.rules is always required.
+ORIENT="$MNT/etc/systemd/user/gamescope-session.service.d/99-orientation.conf"
+FLIP="$MNT/usr/lib/udev/rules.d/71-alioth-flip.rules"
+BASE="$MNT/usr/lib/udev/rules.d/70-alioth.rules"
+if [[ -e "$ORIENT" && -e "$FLIP" ]]; then
+  pass "Kishi 翻转成对" "render + touch flip enabled"
+elif [[ ! -e "$ORIENT" && ! -e "$FLIP" ]]; then
+  pass "Kishi 翻转成对" "flip disabled; base orientation"
+else
+  fail "Kishi 翻转成对" "half-installed: 99-orientation=$([[ -e "$ORIENT" ]] && echo yes || echo no), 71-flip=$([[ -e "$FLIP" ]] && echo yes || echo no)"
+fi
+[[ -e "$BASE" ]] \
+  && pass "基础触摸矩阵" "70-alioth.rules present" \
+  || fail "基础触摸矩阵" "70-alioth.rules missing"
 
 # 6. 首次开机哨兵。Task 7 的 alioth-firstboot 见不到它就什么都不做，
 #    于是根文件系统永远停在几 GB，而 Steam 第一次装游戏才报错。

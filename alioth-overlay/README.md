@@ -45,12 +45,17 @@ Flip 2 / Mini、MANGMI Air Y Pro / Pocket Max、AYN Thor Lite），与 alioth �
 | `usr/share/steamos-manager/remotes.d/50-steamos-arm.toml` | 把 TdpLimit / GpuPerformanceLevel 转给 Steam 的 Quick Access |
 | `usr/share/steamos-manager/devices/xiaomi-alioth.toml` | 让 handheld Steam 客户端把 alioth 认成 SM8250 掌机，显示 Performance 页 |
 | `usr/share/dbus-1/system.d/org.steamos_arm.Power.conf` | 允许 root 在 system bus 上 own `org.steamos_arm.Power` |
-| `usr/lib/steamos-arm/alioth-swapfile-setup` | 创建 2 GiB `/swapfile`；已有 swap 签名时跳过 mkswap |
-| `usr/lib/systemd/system/swapfile.swap` | 2 GiB swapfile，priority 50（zram 是 100） |
+| `usr/lib/steamos-arm/alioth-swapfile-setup` | 创建 2 GiB `/swapfile`；迁移后 `/swapfile` 指向新分区，挂载缺失时 fail closed |
+| `usr/lib/systemd/system/swapfile.swap` | 2 GiB swapfile，priority 50（zram 是 100）；`RequiresMountsFor` 迁移目录 |
 | `usr/lib/systemd/system/alioth-swapfile-setup.service` | 在 swapfile.swap 之前建文件 |
+| `usr/lib/steamos-arm/alioth-super-migrate` | 可选：把运行期只读的系统文件搬到 Android 系统分区，并把 swap 也放过去 |
+| `usr/lib/systemd/system/alioth-super-migrate.service` | 只在 `alioth.supermigrate=1` 的 boot 镜像下运行一次（+ `basic.target.wants/`） |
 | `etc/systemd/logind.conf.d/99-alioth-suspend.conf` | 电源键直接 suspend；覆盖 Frame 的 `HandlePowerKey=ignore` |
-| `etc/systemd/user/gamescope-session.service.d/99-orientation.conf` | Razer Kishi 专用：180° 画面翻转（其他手柄/不接手柄时删除） |
-| `usr/lib/udev/rules.d/71-alioth-flip.rules` | Razer Kishi 专用：与翻转配套的触摸矩阵（必须与 99 成对启用/删除） |
+| `etc/systemd/system/alioth-wifi-recover.service` | 热重启后若 `NetworkManager`/`iwd` 没起来，在 `steamos-manager` 之后补启动（+ `multi-user.target.wants/`） |
+| `usr/lib/steamos-arm/tablet-charger-hold` | 充电器插入开机时保持黑屏充电，短按显示大号电量，长按 1.5 s 启动 SteamOS |
+| `usr/lib/systemd/system/steamos-arm-tablet-charger.service` | 充电保持 unit，`xiaomi,alioth` 条件，display-manager 之前运行（+ `multi-user.target.wants/` enable 链接） |
+| `etc/systemd/user/gamescope-session.service.d/99-orientation.conf` | Razer Kishi 专用：180° 画面翻转。可选；`make-steamos-alioth.sh --install` 会询问，`ALIOTH_ORIENTATION_FLIP=0` 可跳过 |
+| `usr/lib/udev/rules.d/71-alioth-flip.rules` | Razer Kishi 专用：与 99 成对启用的触摸矩阵；两者由同一个 `ALIOTH_ORIENTATION_FLIP` 开关控制 |
 
 ### 电源 UI
 
@@ -75,9 +80,11 @@ Refresh Rate 选项已移除：alioth 是固定 60 Hz 面板，`gamescope-sessio
 
 ### Swap
 
-4 GiB zram（LZ4，priority 100）先于磁盘；另有一个 2 GiB `/swapfile`
+3.5 GiB zram（lzo-rle，priority 100）先于磁盘；另有一个 2 GiB `/swapfile`
 （priority 50），由 `alioth-swapfile-setup` 在第一次启动时创建。zram 压力
-到上限后才落到 UFS 上的 swapfile。zram 的 lzo-rle/lz4/zstd 实测见
+到上限后才落到 UFS 上的 swapfile。如果安装时选择了可选的 extra-storage
+迁移，`/swapfile` 是指向 Android 系统分区上同名文件的符号链接；迁移失败或
+该分区没挂上时，创建脚本会拒绝退回根文件系统。zram 的 lzo-rle/lz4/zstd 实测见
 `AGENS_new.md`：lzo-rle 和 LZ4 基本持平，zstd 压缩比更高但明显更慢。
 
 ### 电源键
@@ -97,10 +104,12 @@ Kishi 的 USB-C 接头把手机的 USB-C 边固定在手柄一侧，默认 `righ
 改成配套的 `0 -1 1 1 0 0`。
 
 这两个文件必须成对安装或删除。它们不是通用默认值：本 fork 默认启用，是因为
-维护者使用 Razer Kishi。使用蓝牙手柄、其他 USB-C 手柄或不接手柄时，请删除
-这两个文件，保留未修改的 `right` 方向和 `70-alioth.rules` 的
+维护者使用 Razer Kishi。使用蓝牙手柄、其他 USB-C 手柄或不接手柄时，请跳过
+这一对，保留未修改的 `right` 方向和 `70-alioth.rules` 的
 `0 1 0 -1 0 1`；否则画面或触摸会单独转 180°。
-从源码构建时直接删掉这两个 overlay 文件即可；已安装系统则删除
+从源码构建时，`make-steamos-alioth.sh --install` 会询问
+`Apply the Razer Kishi 180-degree render+touch flip? [Y/n]`；回答 `n`
+（或设 `ALIOTH_ORIENTATION_FLIP=0`）即成对跳过。已安装系统则删除
 `/usr/lib/systemd/user/gamescope-session.service.d/99-orientation.conf` 和
 `/usr/lib/udev/rules.d/71-alioth-flip.rules` 后重启。
 

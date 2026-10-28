@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""Lenovo tablets: plugging in a charger while the tablet is off makes the
+bootloader start it in "charger mode" (Android shows its charging screen
+then). Linux used to boot all the way into Game Mode instead, so the tablet
+could never stay off while charging.
+
+In charger mode this holds the boot before the login manager: screen dark,
+battery charging. Hold Power for a second to start SteamOS; unplug the
+charger and it turns off. Every boot logs the bootloader's arguments, which
+is where charger mode shows up (androidboot.mode=charger)."""
+import os, select, struct, subprocess, sys, time
+from pathlib import Path
+
+SOURCES = ("/proc/cmdline", "/proc/bootconfig", "/sys/firmware/devicetree/base/chosen/bootargs")
+KEY_POWER, EV_KEY = 116, 1
+EVENT = struct.Struct("llHHi")
+
+
+def log(msg):
+    print(f"tablet-charger: {msg}", flush=True)
+
+
+def bootloader_args():
+    text = []
+    for p in SOURCES:
+        try:
+            text.append(Path(p).read_bytes().replace(b"\0", b" ").decode(errors="replace"))
+        except OSError:
+            pass
+    return " ".join(text)
+
+
+def charger_online():
+    for ps in Path("/sys/class/power_supply").glob("*"):
+        try:
+            if (ps / "type").read_text().strip() in ("USB", "Mains", "Wireless") \
+                    and (ps / "online").read_text().strip() == "1":
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def battery():
+    for ps in Path("/sys/class/power_supply").glob("*"):
+        try:
+            if (ps / "type").read_text().strip() == "Battery":
+                return (ps / "capacity").read_text().strip()
+        except OSError:
+            pass
+    return "?"
+
+
+def power_keys():
+    """Input devices that have KEY_POWER."""
+    fds = []
+    for dev in Path("/sys/class/input").glob("event*"):
+        try:
+            bits = (dev / "device/capabilities/key").read_text().split()
+        except OSError:
+            continue
+        mask = 0
+        for i, word in enumerate(reversed(bits)):
+            mask |= int(word, 16) << (64 * i)
+        if mask >> KEY_POWER & 1:
+            try:
+                fds.append(os.open(f"/dev/input/{dev.name}", os.O_RDONLY | os.O_NONBLOCK))
+            except OSError:
+                pass
+    return fds
+
+
+def backlights(value=None):
+    saved = {}
+    for bl in Path("/sys/class/backlight").glob("*"):
+        try:
+            saved[bl] = (bl / "brightness").read_text().strip()
+            if value is not None:
+                (bl / "brightness").write_text(str(value))
+        except OSError:
+            pass
+    return saved
+
+
+# 5x7 pixel font, drawn as double-width '##' so it is readable on the 2400x1080
+# console.  The charge screen is deliberately all console: it must work before
+# the display manager and without a GPU/Steam surface.
+DIGITS = {
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "10000", "11110", "00001", "00001", "11110"),
+    "6": ("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
+}
+
+
+# 5x5 block font for the two status lines.  Each glyph is five rows high and
+# five columns wide (plus a one-column gap), i.e. five times the height and
+# width of the normal console text.  Uppercase-only; unknown glyphs become a
+# space.  "HOLD POWER TO START STEAMOS" is 28 characters -> 167 columns, which
+# fits the 300-column console alongside the battery and percentage.
+TEXT = {
+    "A": ("01110", "10001", "11111", "10001", "10001"),
+    "C": ("01111", "10000", "10000", "10000", "01111"),
+    "D": ("11110", "10001", "10001", "10001", "11110"),
+    "E": ("11111", "10000", "11110", "10000", "11111"),
+    "G": ("01111", "10000", "10111", "10001", "01111"),
+    "H": ("10001", "10001", "11111", "10001", "10001"),
+    "I": ("11111", "00100", "00100", "00100", "11111"),
+    "L": ("10000", "10000", "10000", "10000", "11111"),
+    "M": ("10001", "11011", "10101", "10001", "10001"),
+    "N": ("10001", "11001", "10101", "10011", "10001"),
+    "O": ("01110", "10001", "10001", "10001", "01110"),
+    "P": ("11110", "10001", "11110", "10000", "10000"),
+    "R": ("11110", "10001", "11110", "10100", "10011"),
+    "S": ("01111", "10000", "01110", "00001", "11110"),
+    "T": ("11111", "00100", "00100", "00100", "00100"),
+    "W": ("10001", "10001", "10101", "11011", "10001"),
+    " ": ("00000", "00000", "00000", "00000", "00000"),
+}
+
+
+def center(text, width=80):
+    return text[:width].center(width)
+
+
+def big_digits(text):
+    rows = []
+    for r in range(7):
+        line = ""
+        for digit in text:
+            glyph = DIGITS.get(digit, DIGITS["0"])
+            line += "".join("############" if p == "1" else "            " for p in glyph[r]) + "    "
+        rows.extend([line, line])
+    return rows
+
+
+def big_text(text):
+    rows = [""] * 5
+    for ch in text.upper():
+        glyph = TEXT.get(ch, TEXT[" "])
+        for r in range(5):
+            rows[r] += "".join("#" if p == "1" else " " for p in glyph[r]) + " "
+    return [row.rstrip() for row in rows]
+
+
+def battery_art(pct):
+    pct = max(0, min(100, int(pct)))
+    inner = 180
+    fill = round(inner * pct / 100)
+    body = "#" * fill + "-" * (inner - fill)
+    top = "+" + "-" * inner + "+"
+    mid = "|" + body + "|"
+    nub = mid + "==+"
+    # Double the previous drawing: 30 rows, 182 columns.
+    return [top] * 6 + [mid] * 6 + [nub] * 6 + [mid] * 6 + [top] * 6
+
+
+def show_charge(pct):
+    try:
+        pct = int(pct)
+    except (TypeError, ValueError):
+        pct = 0
+    color = "\033[1;32m" if pct >= 20 else ("\033[1;33m" if pct >= 10 else "\033[1;31m")
+    lines = ["", ""]
+    lines += [center(color + line + "\033[0m", 300) for line in battery_art(pct)]
+    lines.append("")
+    lines += [center(color + line + "\033[0m", 300) for line in big_digits(str(pct))]
+    lines.append("")
+    lines += [center(color + line + "\033[0m", 300)
+              for line in big_text("CHARGING")]
+    lines.append("")
+    lines += [center(color + line + "\033[0m", 300)
+              for line in big_text("HOLD POWER TO START STEAMOS")]
+    lines.append("")
+    text = "\033[2J\033[H\033[?25l" + "\n".join(lines) + "\n\033[?25h"
+    for path in ("/dev/tty0", "/dev/tty1"):
+        try:
+            with open(path, "w") as tty:
+                tty.write(text)
+                tty.flush()
+        except OSError:
+            pass
+
+
+def say(msg):
+    # tty0 is the active VT; tty1 is the usual first VT.  Write both so the
+    # charge text is visible regardless of which one the boot messages used.
+    for path in ("/dev/tty0", "/dev/tty1"):
+        try:
+            with open(path, "w") as t:
+                t.write("\033[2J\033[H\n\n    " + msg + "\n")
+                t.flush()
+        except OSError:
+            pass
+
+
+def console_quiet():
+    """Stop the kernel from painting boot messages over the charge screen."""
+    try:
+        orig = Path("/proc/sys/kernel/printk").read_text()
+    except OSError:
+        return None
+    try:
+        subprocess.run(["dmesg", "-n", "1"], check=False)
+    except OSError:
+        pass
+    return orig
+
+
+def console_restore(orig):
+    if orig is None:
+        return
+    try:
+        Path("/proc/sys/kernel/printk").write_text(orig)
+    except OSError:
+        pass
+
+
+def gpu_devfreq():
+    for d in Path("/sys/class/devfreq").glob("*"):
+        name = d.name
+        if ("gpu" in name or "3d00000" in name) and (d / "min_freq").exists():
+            return d
+    d = Path("/sys/class/kgsl/kgsl-3d0/devfreq")
+    return d if (d / "min_freq").exists() else None
+
+
+def low_clocks():
+    """Clamp CPU and GPU to their lowest frequency while charging.
+
+    schedutil/simple_ondemand only *allow* the hardware to drop; USB, boot
+    logging, or a late power service can still raise a clock.  Clamp the
+    ceilings instead, and keep the old values for release_hold().
+    """
+    saved = []
+    for pol in sorted(Path("/sys/devices/system/cpu/cpufreq").glob("policy*")):
+        try:
+            low = int((pol / "scaling_min_freq").read_text().strip())
+            old = int((pol / "scaling_max_freq").read_text().strip())
+        except (OSError, ValueError):
+            continue
+        saved.append((pol / "scaling_max_freq", old, low))
+    gpu = gpu_devfreq()
+    if gpu is not None:
+        try:
+            values = [int(f) for f in (gpu / "available_frequencies").read_text().split()]
+            if not values:
+                values = [int((gpu / "min_freq").read_text().strip())]
+            gpu_low = min(values)
+            gpu_min = int((gpu / "min_freq").read_text().strip())
+            gpu_max = int((gpu / "max_freq").read_text().strip())
+            saved.extend([(gpu / "min_freq", gpu_min, gpu_low),
+                          (gpu / "max_freq", gpu_max, gpu_low)])
+        except (OSError, ValueError):
+            pass
+    enforce_low_clocks(saved)
+    log(f"low clocks: {len(saved)} CPU/GPU limits")
+    return saved
+
+
+def enforce_low_clocks(saved):
+    for path, _old, low in saved:
+        try:
+            path.write_text(str(low))
+        except OSError:
+            pass
+
+
+def restore_clocks(saved):
+    # Raise ceilings before lowering floors again, so min_freq never exceeds
+    # max_freq midway through restoration.
+    for path, old, _low in saved:
+        if path.name == "max_freq":
+            try:
+                path.write_text(str(old))
+            except OSError:
+                pass
+    for path, old, _low in saved:
+        if path.name == "min_freq":
+            try:
+                path.write_text(str(old))
+            except OSError:
+                pass
+
+
+
+def display_manager_started():
+    for unit in ("graphical-session.target", "steamos-manager.service", "display-manager.service"):
+        try:
+            r = subprocess.run(
+                ["systemctl", "is-active", "--quiet", unit],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+            )
+            if r.returncode == 0:
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return False
+
+
+def release_hold(saved, orig_printk, clocks):
+    restore_clocks(clocks)
+    say("")
+    console_restore(orig_printk)
+    for bl, v in saved.items():
+        try:
+            (bl / "brightness").write_text(v)
+        except OSError:
+            pass
+
+
+def main():
+    args = bootloader_args()
+    log("bootloader: " + (" ".join(a for a in args.split() if a.startswith("androidboot.")) or "-"))
+    if "androidboot.mode=charger" not in args and "androidboot.mode=offmode_charging" not in args:
+        return 0
+    log(f"charger mode, battery {battery()}%: holding the boot until Power is held")
+    saved = backlights(0)
+    orig_printk = console_quiet()
+    keys = power_keys()
+    if not keys:
+        log("no power key found, booting normally")
+        console_restore(orig_printk)
+        for bl, v in saved.items():
+            (bl / "brightness").write_text(v)
+        return 0
+    clocks = low_clocks()
+    pressed_at, unplugged_at, shown_until = None, None, 0.0
+    next_dm_check, next_clock_check = 0.0, 0.0
+    while True:
+        r, _w, _x = select.select(keys, [], [], 1.0)
+        for fd in r:
+            try:
+                data = os.read(fd, EVENT.size * 32)
+            except OSError:
+                continue
+            for i in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _s, _u, etype, code, value = EVENT.unpack_from(data, i)
+                if etype == EV_KEY and code == KEY_POWER:
+                    log(f"power key value={value}")
+                    if value == 1:
+                        pressed_at = time.monotonic()
+                        # Short press: show the charge for a few seconds.
+                        show_charge(battery())
+                        for bl, v in saved.items():
+                            try:
+                                (bl / "brightness").write_text(str(max(1, int(v))))
+                            except (OSError, ValueError):
+                                pass
+                        shown_until = time.monotonic() + 10
+                    elif value == 0:
+                        pressed_at = None
+        now = time.monotonic()
+        if now >= next_clock_check:
+            next_clock_check = now + 5.0
+            enforce_low_clocks(clocks)
+        if now >= next_dm_check:
+            next_dm_check = now + 2.0
+            if display_manager_started():
+                log("SteamOS display manager started: releasing charger hold")
+                release_hold(saved, orig_printk, clocks)
+                return 0
+        if pressed_at is not None and now - pressed_at >= 1.5:
+            log("Power held: starting SteamOS")
+            release_hold(saved, orig_printk, clocks)
+            return 0
+        if shown_until and now > shown_until:
+            backlights(0); shown_until = 0.0
+        if charger_online():
+            unplugged_at = None
+        elif unplugged_at is None:
+            unplugged_at = now
+        elif now - unplugged_at > 5:
+            log("charger removed: turning off")
+            release_hold(saved, orig_printk, clocks)
+            subprocess.run(["systemctl", "poweroff"])
+            return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

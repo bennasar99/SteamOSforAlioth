@@ -2,6 +2,7 @@
 Description=2 GiB alioth swap file
 Requires=alioth-swapfile-setup.service
 After=alioth-swapfile-setup.service
+RequiresMountsFor=/var/lib/steamos-extra
 
 [Swap]
 What=/swapfile

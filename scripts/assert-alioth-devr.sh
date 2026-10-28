@@ -61,13 +61,13 @@ done
 
 # 1a. zram. The stock Frame config is ram/2 with lzo-rle; on the 6 GB phone
 #     that is 2.7 GB. Install the shared SteamOS-ARM drop-in so the next boot
-#     gets RAM-sized zstd zram.
+#     gets a fixed 3.5 GiB lzo-rle zram.
 ZRAM="$R/usr/lib/systemd/zram-generator.conf.d/60-steamos-arm-zram.conf"
-if [[ -f "$ZRAM" ]] && grep -q 'zram-size = 4096' "$ZRAM" \
-   && grep -q 'compression-algorithm = lz4' "$ZRAM"; then
-  pass "zram 已改为 4 GiB LZ4" "60-steamos-arm-zram.conf 已装"
+if [[ -f "$ZRAM" ]] && grep -q 'zram-size = 3584' "$ZRAM" \
+   && grep -q 'compression-algorithm = lzo-rle' "$ZRAM"; then
+  pass "zram 已改为 3.5 GiB lzo-rle" "60-steamos-arm-zram.conf 已装"
 else
-  fail "zram 已改为 4 GiB LZ4" "缺少或内容不对: $ZRAM"
+  fail "zram 已改为 3.5 GiB lzo-rle" "缺少或内容不对: $ZRAM"
 fi
 
 # 1b. The Frame launcher passes -deckard/-vrgamepadui and makes gamescope
@@ -120,9 +120,13 @@ fi
 #    session-N.scope 都以 'dependency' 失败（连串口登录也一样），于是没有
 #    seat、没有 DRM master，屏幕不亮（2026-10-23 真机实测）。
 want_mask_user=(steamvr.service steamvr-logs.service steamvr-proxmicmute.service
-                steamvr-v4l2cam.service steamvr-nested-desktop.service)
+                steamvr-v4l2cam.service steamvr-nested-desktop.service
+                steamvr-plasma.service)
 want_mask_sys=(steamvr-program-ble.service steamvr-v4l2loopback.service
                steamvr-set-kernel-thread-priorities.service
+               steamvr-web-debug-portforward.service dsp_service.service
+               gpu-trace.service iris-driver-rebind.service
+               steamos-log-submitter.service
                deckard-audio-setup.service deckard-fan-control.service
                deckard-fpga.service deckard-led-control.service
                deckard-typec-logger.service deckard-charger.service

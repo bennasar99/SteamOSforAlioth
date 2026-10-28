@@ -72,9 +72,11 @@ and its symptom, and every one of them is written up in the docs.
   `abl_a`/`abl_b` writes of any kind. Those partitions are the one thing on
   this phone that can only be repaired over EDL 9008, so the port never names
   them. Recovery is always `volume-down + power` → fastboot.
-- **Android's system partitions stay.** `super` (8.5 GiB) is never written.
-  SteamOS lives in `userdata`, which is where the boot command line was
-  pointing all along.
+- **Android's system partitions stay by default.** `super` (8.5 GiB) is not
+  written unless you opt into the extra-storage migration during
+  `flash-alioth.sh --install`; that erases it and makes Android restore require
+  a full stock ROM. SteamOS lives in `userdata`, which is where the boot
+  command line was pointing all along.
 - **Everything is asserted, not remembered.** 16 assertion scripts in
   [`scripts/`](scripts) check the DTB, the boot image, the overlay, the flash
   script, the module set and the kernel config. `flash-alioth.sh` refuses to
@@ -170,6 +172,13 @@ answers which question, and in what order to read them.
   controller, remove both files and use the unmodified `right` orientation.
   They are a pair: never install only one, or either the picture or touch
   will stay rotated 180°.
+- **FPS limiting is not solved by config.** A same-scene A/B with
+  `GAMESCOPE_FPS_LIMIT` 60 vs 30 on Mirror's Edge logged 62 FPS both times.
+  The stock gamescope 3.16.30 limiter divides by `--nested-refresh` (60) while
+  the panel vblank runs at 120, so a 30 FPS target becomes 60. The
+  `hashtagbasit/SteamOS-ARM-Port` repository has the fix in gamescope commits
+  `59136805` and `f56b551b`; this port still runs the stock binary. Do not
+  claim a working cap until a patched gamescope is built and an A/B passes.
 - **The RTC lies.** It reads about 64 years fast on a cold boot, which breaks
   PAM and every HTTPS certificate until NTP catches up. The port installs a
   `clock-epoch` floor to keep the first boot sane.
@@ -267,8 +276,10 @@ irreversible.
 ./flash-alioth.sh --install
 ```
 
-It prints what it is about to do and waits for you to type `ERASE`. What it
-does:
+It prints what it is about to do and waits for you to type `ERASE`. It also
+asks a separate yes/no question: move static SteamOS data and the 2 GiB swap
+file onto Android's system partitions? That option erases Android's system
+images and is described below. What the normal path does:
 
 1. `erase dtbo_a` + `erase dtbo_b` — the stock overlay would otherwise be
    merged onto the mainline device tree and fail
@@ -289,8 +300,10 @@ verifies it by SHA-256 on the device, and reboots.
 
 ### Getting Android back
 
-`super` was never written, so Android's system is still there. Getting it to
-boot again needs three things from a stock fastboot ROM for your model:
+By default `super` was never written, so Android's system is still there.
+Getting it to boot again needs three things from a stock fastboot ROM for your
+model: (If you chose the extra-storage migration, also flash the ROM's
+`super.img`; erasing data alone is not enough.)
 
 ```bash
 fastboot flash boot_a <stock boot.img>     # and boot_b

@@ -31,9 +31,33 @@ die() { echo "apply-alioth-overlay: $*" >&2; exit 1; }
 [[ -d "$R" ]] || die "rootfs 目录不存在: $R"
 [[ -d "$OVL" ]] || die "找不到 $OVL"
 
+# The Razer Kishi 180-degree flip is a pair: 99-orientation.conf flips the
+# renderer and 71-alioth-flip.rules flips touch. It is optional and asked for
+# by make-steamos-alioth.sh --install; ALIOTH_ORIENTATION_FLIP=0 omits both.
+# The default is 1 so direct callers and the assertion suite keep the current
+# behaviour.
+ORIENTATION_FLIP="${ALIOTH_ORIENTATION_FLIP:-1}"
+case "$ORIENTATION_FLIP" in
+  0|1) ;;
+  *) die "ALIOTH_ORIENTATION_FLIP must be 0 or 1, got '$ORIENTATION_FLIP'" ;;
+esac
+orientation_file() {
+  case "$1" in
+    etc/systemd/user/gamescope-session.service.d/99-orientation.conf|usr/lib/udev/rules.d/71-alioth-flip.rules) return 0 ;;
+  esac
+  return 1
+}
+
 # etc/ 与 usr/ 下的文件就是全部；README.md 刻意留在仓库里不入镜像。
-mapfile -t files < <(cd "$OVL" && find etc usr -type f | sort)
+files=()
+while IFS= read -r f; do
+  if [[ "$ORIENTATION_FLIP" == 0 ]] && orientation_file "$f"; then
+    continue
+  fi
+  files+=("$f")
+done < <(cd "$OVL" && find etc usr -type f | sort)
 [[ ${#files[@]} -gt 0 ]] || die "$OVL 下 etc/ 与 usr/ 里一个文件都没有"
+log "Razer Kishi orientation flip: $([[ "$ORIENTATION_FLIP" == 1 ]] && echo enabled || echo disabled)"
 
 # 原样保留权限位，不要一律 0644：alioth-firstboot 是要被 systemd 执行的，
 # 装成 0644 的话 ExecStart 会以 203/EXEC 失败，而那条日志离「首次开机没

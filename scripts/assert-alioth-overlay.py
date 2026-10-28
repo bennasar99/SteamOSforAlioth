@@ -41,11 +41,26 @@ DEVICE_TOML = os.path.join(
     OVL, "usr/share/steamos-manager/devices/xiaomi-alioth.toml")
 LOGIND_SUSPEND = os.path.join(
     OVL, "etc/systemd/logind.conf.d/99-alioth-suspend.conf")
+WIFI_RECOVER = os.path.join(
+    OVL, "etc/systemd/system/alioth-wifi-recover.service")
+WIFI_RECOVER_WANTS = os.path.join(
+    OVL, "etc/systemd/system/multi-user.target.wants/alioth-wifi-recover.service")
+CHARGER_SCRIPT = os.path.join(
+    OVL, "usr/lib/steamos-arm/tablet-charger-hold")
+CHARGER_SERVICE = os.path.join(
+    OVL, "usr/lib/systemd/system/steamos-arm-tablet-charger.service")
+CHARGER_WANTS = os.path.join(
+    OVL, "usr/lib/systemd/system/multi-user.target.wants/steamos-arm-tablet-charger.service")
 SWAP_SETUP = os.path.join(OVL, "usr/lib/steamos-arm/alioth-swapfile-setup")
 SWAP_SERVICE = os.path.join(OVL, "usr/lib/systemd/system/alioth-swapfile-setup.service")
 SWAP_UNIT = os.path.join(OVL, "usr/lib/systemd/system/swapfile.swap")
 SWAP_WANTS = os.path.join(
     OVL, "usr/lib/systemd/system/swap.target.wants/swapfile.swap")
+MIGRATE_SCRIPT = os.path.join(OVL, "usr/lib/steamos-arm/alioth-super-migrate")
+MIGRATE_UNIT = os.path.join(
+    OVL, "usr/lib/systemd/system/alioth-super-migrate.service")
+MIGRATE_WANTS = os.path.join(
+    OVL, "usr/lib/systemd/system/basic.target.wants/alioth-super-migrate.service")
 DROPIN_DIR = os.path.join(OVL, "etc/systemd/user/gamescope-session.target.d")
 # steamos-overlay 的这个 drop-in 把 Wants= 清空后只留 steam 那三个，所以我们
 # 加 Wants= 的 drop-in 必须按文件名排在它**后面**。见下面第 7 条。
@@ -468,7 +483,65 @@ else:
           "HandlePowerKey=suspend" in logind_src,
           "99-alioth-suspend.conf 覆盖 Frame 的 HandlePowerKey=ignore")
 
-# 12. Swap file. 4 GiB zram (priority 100) first, then a 2 GiB /swapfile at
+# 11b. Warm reboot: steamos-manager can leave NetworkManager/iwd inactive.
+try:
+    wifi_src = io.open(WIFI_RECOVER, encoding="utf-8").read()
+    wifi_link = os.path.islink(WIFI_RECOVER_WANTS) and         os.readlink(WIFI_RECOVER_WANTS) == "../alioth-wifi-recover.service"
+    check("热重启后 Wi-Fi 恢复",
+          "After=steamos-manager.service" in wifi_src
+          and "systemctl start NetworkManager" in wifi_src
+          and "systemctl start iwd" in wifi_src
+          and wifi_link,
+          "alioth-wifi-recover 在 steamos-manager 之后补启 NM/iwd，且有 enable 链接"
+          if wifi_link else "缺 enable 链接")
+except OSError as exc:
+    check("热重启后 Wi-Fi 恢复", False, str(exc))
+
+# 11c. Charger-mode hold. Plugging the charger into a powered-off phone makes
+#      the bootloader add androidboot.mode=charger; this unit holds the boot
+#      dark and shows the charge screen until Power is held. If the unit or its
+#      enable link is missing from alioth-overlay, the next image silently
+#      boots straight to SteamOS and the screen never appears.
+try:
+    charger_src = io.open(CHARGER_SCRIPT, encoding="utf-8").read()
+    charger_unit = io.open(CHARGER_SERVICE, encoding="utf-8").read()
+except OSError as exc:
+    check("充电屏已进 alioth-overlay", False, f"读不到充电屏文件: {exc}")
+else:
+    charger_link = (
+        os.path.islink(CHARGER_WANTS)
+        and os.readlink(CHARGER_WANTS) == "../steamos-arm-tablet-charger.service")
+    charger_ok = (
+        os.access(CHARGER_SCRIPT, os.X_OK)
+        and "androidboot.mode=charger" in charger_src
+        and "androidboot.mode=offmode_charging" in charger_src
+        and "show_charge" in charger_src
+        and "big_text" in charger_src
+        and "HOLD POWER TO START STEAMOS" in charger_src
+        and "int(v) // 2" not in charger_src
+        and "Power held: starting SteamOS" in charger_src
+        and "display_manager_started" in charger_src
+        and "release_hold" in charger_src
+        and "low_clocks" in charger_src
+        and "scaling_max_freq" in charger_src
+        and "available_frequencies" in charger_src
+        and "restore_clocks" in charger_src
+        and "ConditionFirmware=|device-tree-compatible(xiaomi,alioth)" in charger_unit
+        and "Before=display-manager.service" in charger_unit
+        and "alioth-game-tune.service" in charger_unit
+        and "steamos-arm-power.service" in charger_unit
+        and "RefuseManualStop=yes" in charger_unit
+        and "KillMode=none" in charger_unit.split("[Service]", 1)[-1]
+        and "KillMode=none" not in charger_unit.split("[Service]", 1)[0]
+        and "ExecStart=/usr/lib/steamos-arm/tablet-charger-hold" in charger_unit
+        and "WantedBy=multi-user.target" in charger_unit
+        and charger_link
+    )
+    check("充电屏已进 alioth-overlay", charger_ok,
+          "脚本、alioth unit、enable 链接都在；含 watchdog" if charger_ok
+          else "充电屏配置不完整或缺少 enable 链接")
+
+# 12. Swap file. 3.5 GiB zram (priority 100) first, then a 2 GiB /swapfile at
 #     priority 50. The file is created by a oneshot service before the swap unit;
 #     mkswap is skipped when the file already carries a swap signature.
 try:
@@ -485,11 +558,55 @@ else:
                and "What=/swapfile" in swap_unit
                and "Priority=50" in swap_unit
                and "Requires=alioth-swapfile-setup.service" in swap_unit
+               and "RequiresMountsFor=/var/lib/steamos-extra" in swap_unit
+               and "EXTRA=/var/lib/steamos-extra" in swap_src
+               and "mountpoint -q" in swap_src
+               and "exit 1" in swap_src
                and os.path.islink(SWAP_WANTS)
                and os.path.realpath(SWAP_WANTS) == os.path.realpath(SWAP_UNIT))
     check("2 GiB swap file 已配置", swap_ok,
           "setup + swapfile.swap + swap.target.wants 都已配置" if swap_ok
           else "swap file 配置不完整")
+
+# 13. Opt-in extra-storage migration. The unit is gated on the boot token and
+#     a rootfs sentinel; the script must never move boot-critical paths. The
+#     move list is deliberately read-only data, and the swap file follows the
+#     printed /swapfile path via a symlink.
+try:
+    migrate_src = io.open(MIGRATE_SCRIPT, encoding="utf-8").read()
+    migrate_unit = io.open(MIGRATE_UNIT, encoding="utf-8").read()
+except OSError as exc:
+    check("迁移到 Android 系统分区", False, f"读不到迁移文件: {exc}")
+else:
+    mig_ok = ("alioth.supermigrate=1" in migrate_src
+              and "alioth-super-migrated" in migrate_src
+              and "mkfs.ext4" in migrate_src
+              and "rsync -aHAX --numeric-ids --delete" in migrate_src
+              and "mount --bind" in migrate_src
+              and "x-systemd.requires-mounts-for=$EXTRA" in migrate_src
+              and "ConditionKernelCommandLine=alioth.supermigrate=1" in migrate_unit
+              and "ConditionPathExists=!/var/lib/alioth-super-migrated" in migrate_unit
+              and "Before=basic.target" in migrate_unit
+              and "ExecStart=/usr/lib/steamos-arm/alioth-super-migrate" in migrate_unit
+              and os.path.islink(MIGRATE_WANTS)
+              and os.path.realpath(MIGRATE_WANTS) == os.path.realpath(MIGRATE_UNIT))
+    check("迁移到 Android 系统分区", mig_ok,
+          "script + unit + basic.target.wants 都已配置" if mig_ok
+          else "迁移配置不完整")
+
+    m = re.search(r"MOVES=\((.*?)\n\)", migrate_src, re.S)
+    if not m:
+        check("迁移清单", False, "找不到 MOVES=( ... ) 数组")
+    else:
+        moves = [ln.strip() for ln in m.group(1).splitlines()
+                 if ln.strip() and not ln.strip().startswith("#")]
+        forbidden = ("usr/bin", "usr/sbin", "usr/lib/systemd", "usr/lib/udev",
+                     "usr/lib/modules", "usr/lib/firmware", "usr/lib/python",
+                     "etc/", "var/", "home/", "/boot")
+        bad = [x for x in moves if any(x == f or x.startswith(f + "/") for f in forbidden)]
+        check("迁移清单", not bad,
+              f"{len(moves)} 项，全部是运行期只读数据" if not bad
+              else "包含启动关键路径: " + ", ".join(bad))
 
 print()
 if fails:

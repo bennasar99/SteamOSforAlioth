@@ -149,6 +149,12 @@ Valve rootfs 和小米签名的固件都不是我能再分发的，所以唯一�
   `71-alioth-flip.rules` 把触摸矩阵改成配套值。使用蓝牙手柄、其他 USB-C
   手柄或不接手柄时，删除这两个文件，保留未修改的 `right` 朝向。两者必须
   成对启用或删除：只装一个会让画面或触摸单独转 180°。
+- **限帧不是靠配置就能解决的。** 同一个场景里把 `GAMESCOPE_FPS_LIMIT`
+  从 60 改成 30，Mirror's Edge 两次都记录 62 FPS。原版 gamescope 3.16.30
+  用 `--nested-refresh`（60）计算 vblank 除数，而面板实际是 120 Hz，所以
+  30 FPS 目标变成了 60。`hashtagbasit/SteamOS-ARM-Port` 的 gamescope 提交
+  `59136805`、`f56b551b` 已修复；本移植仍然用原版二进制。在构建并安装打过
+  补丁的 gamescope、再通过 A/B 之前，不要说限帧已经可用。
 - **RTC 会说谎。** 冷启动时读出来快约 64 年，于是 PAM 和所有 HTTPS 证书在 NTP
   校准之前全部失效。本移植装了一个 `clock-epoch` 下限来保住首次开机。
 

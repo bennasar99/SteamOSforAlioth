@@ -1,6 +1,6 @@
 # AGENS_new — alioth handoff: changes done and tests pending
 
-Date: 2026-10-27
+Date: 2026-10-27 (updated 2026-10-28)
 Repo: `/home/toni/dev/SteamOSforAlioth`
 Device: POCO F3 / Redmi K40 (`alioth`, 6 GB / 128 GB), postmarketOS replaced by SteamOS ARM.
 
@@ -10,7 +10,9 @@ claim that any pending item works.
 
 ## Hard rules still apply
 
-- Never write `abl_a` / `abl_b`, `super`, or `vbmeta`.
+- Never write `abl_a` / `abl_b` or `vbmeta`. `super` is written only by the
+  opt-in extra-storage migration (`boot-migrate.img` ->
+  `alioth-super-migrate`); `flash-alioth.sh` itself never writes it.
 - `userdata` is only written by `./flash-alioth.sh --install`, after the human
   types `ERASE`. Do not type it for them.
 - Never raise the amplifier gains (`RCV` 4 / `LCV` 10).
@@ -25,20 +27,37 @@ The source tree contains changes that are **not all installed** on the phone.
 Do not confuse the two:
 
 - The installed phone has the TDP + Manual GPU Clock power UI, the handheld
-  `RUNSTEAM.sh`, the logind suspend drop-in, the 4 GiB LZ4 zram drop-in, the
-  2 GiB `/swapfile`, and the Refresh Rate removal. Profiles were removed from
-  the service/remotes and are gone from the running UI; TDP and suspend are
-  confirmed working.
-- The installed phone still does **not** limit FPS; the handheld launcher made
-  the Performance page and TDP work but did not make the FPS limiter work.
+  `RUNSTEAM.sh`, the logind suspend drop-in, the **4 GiB LZ4** zram drop-in
+  (measured 2026-10-28), the 2 GiB `/swapfile`, and the Refresh Rate removal.
+  Profiles were removed from the service/remotes and are gone from the running
+  UI; TDP and suspend are confirmed working.
+- The installed phone now has the FPS session candidates (`vblank_mode=3` and
+  `PROTON_ENABLE_WAYLAND=0`) but they do not cap Mirror's Edge in-game; A/B at
+  `GAMESCOPE_FPS_LIMIT` 60 vs 30 both logged 62.0. The game config is 62 and no
+  game file is modified.
 - The source tree now installs the handheld `RUNSTEAM.sh` through
-  `apply-alioth-devr.sh`, carries the full power UI, the VRR-off/FPS-limiter
-  patch, and the logind suspend drop-in; this is what the next build will use.
+  `apply-alioth-devr.sh`, carries the full power UI, the VRR-off/FPS session
+  fix, and the logind suspend drop-in; this is what the next build will use.
 - Rebuilding/reflashing, or copying the files again, is required to make the
   installed system match the source exactly.
-- The installed phone now has **4 GiB zram with LZ4** plus a **2 GiB
-  `/swapfile`** (priority 50; zram priority 100). The stock 2.7 GB `ram/2`
-  lzo-rle value was a likely factor in the memory-pressure session crashes.
+- The source tree now sets **3.5 GiB zram with lzo-rle** plus a **2 GiB
+  `/swapfile`** (priority 50; zram priority 100). The running phone still
+  reports **4G lz4** until it is rebooted with a rebuilt image (measured
+  2026-10-28). The stock 2.7 GB `ram/2` lzo-rle value was a likely factor in
+  the memory-pressure session crashes.
+- The source tree also has the opt-in Set B migration to `super` (~4.5 GB of
+  read-only system data + 2 GiB swap) through `boot-migrate.img` and
+  `alioth-super-migrate`. It is not built or flashed yet; Android restore
+  would then require a full stock ROM.
+- `/opt/steamvr` is removed at build time. `gpu-trace`,
+  `iris-driver-rebind`, and `steamos-log-submitter` are masked in the alioth
+  layer; the log-submitter daemon was also masked manually on the running
+  phone on 2026-10-28.
+- `flash-alioth.sh` and `make-steamos-alioth.sh` are now fully English;
+  `--install` asks separately whether to enable the extra-storage migration.
+  `make-steamos-alioth.sh --install` also asks whether to apply the Razer
+  Kishi 180-degree render+touch flip (`ALIOTH_ORIENTATION_FLIP=0/1`); the
+  pair is installed or skipped together.
 - The installed phone now also has the **Razer Kishi** orientation pair
   (`99-orientation.conf` + `71-alioth-flip.rules`); picture and touch are
   confirmed correct. Without a Razer Kishi, remove both and keep the
@@ -61,8 +80,10 @@ pressure:
 
 The TDP service itself was healthy: it logged the user's rapid TDP changes
 (3–10 W) without errors. The crash looks like a Steam UI/session memory
-problem, not a TDP or kernel regression. The zram drop-in is now installed;
-zram is 4 GiB LZ4 (see benchmark below).
+problem, not a TDP or kernel regression. The source zram drop-in now sets
+3.5 GiB lzo-rle; the running phone still reports 4G lz4 until it is rebooted
+with a rebuilt/reinstalled drop-in. The benchmark below was measured on the
+earlier 4 GiB LZ4 device.
 
 ## Done: Steam power UI (TDP + Manual GPU Clock; profiles removed)
 
@@ -149,11 +170,12 @@ Conclusions:
 - **zstd** gives a ~16% better ratio (1.72) but is ~2.4x slower to write and
   ~3x slower to read. Use it only if effective swap capacity matters more than
   latency.
-- LZ4 remains the current 4 GiB choice; there is no measured reason to switch
-  to lzo-rle. The stock config was lzo-rle, ram/2 (2.7 GiB on this phone).
+- lzo-rle and LZ4 are tied within measurement noise; the drop-in now uses a
+  fixed 3.5 GiB lzo-rle configuration. The stock config was lzo-rle, ram/2
+  (2.7 GiB on this phone).
 
-The live phone zram0 is 4 GiB LZ4, and the drop-in has the same values. A reboot
-is not required for the live device; the drop-in is authoritative on next boot.
+During the benchmark the live phone zram0 was 4 GiB LZ4. The drop-in now sets
+3.5 GiB lzo-rle; a reboot applies it on the device.
 
 ## Done: Razer Kishi 180° screen orientation (picture and touch confirmed)
 
@@ -203,128 +225,75 @@ rebooted, so libinput reopens the touchscreen.
   This is the configuration to use with a Bluetooth controller, a different
   USB-C controller, or no controller.
 
-## Failed / unverified: FPS limiter
+## FPS limiter: root cause found upstream, fix not applied (2026-10-27)
 
-Symptom: Steam's **Framerate Limit** does not appear to do anything.
+The exact bug is in gamescope 3.16.30's non-VRR limiter path. It computes the
+vblank divisor from `--nested-refresh` (60 in this session) while `vblank_idx`
+counts the panel's real 120 Hz vblanks. A 30 FPS target becomes every second
+vblank = 60 FPS; a 60 FPS target is not limited. That matches the A/B:
 
-### Source change made
+| `GAMESCOPE_FPS_LIMIT` | MangoHud average | GPU |
+|---|---:|---:|
+| 60 | 62.0 | 67.8% |
+| 30 | 62.0 | 74.0% |
 
-In `steamos-overlay/usr/lib/steamos/gamescope-session`:
+The earlier 29.9 was the intro/loading scene (GPU 16.7%), not a cap. The game
+config is `MaxSmoothedFrameRate=62`; no game file is modified.
 
-```text
-STEAM_GAMESCOPE_VRR_SUPPORTED=0
-```
+`hashtagbasit/SteamOS-ARM-Port` has the exact fix:
 
-and `--adaptive-sync` was removed from `GAMESCOPE_ARGS`.
+- `59136805b7254c0ce3ffa36c55ca5e0d68e89005` — divide by the real output
+  refresh, not `--nested-refresh`.
+- `f56b551b730b203210407cc2a2588dfa3cf50c04` — pace by elapsed time, not
+  counted vblank wakeups; cap against the panel refresh.
+- `96888ffe3fb0c7b17792a1b1b3d2218f6e3f9445` — the duplicate
+  `systemctl --user import-environment` bug that kept Steam's gamescope flags
+  away. This one is already fixed in our `gamescope-onready` source.
 
-`STEAM_GAMESCOPE_DYNAMIC_FPSLIMITER=1` is still set.
+Their `external-and-mods/gamescope` source contains the two limiter patches.
+This port still runs the stock gamescope 3.16.30 binary, so the fix is **not
+applied**. The `vblank_mode=3` / `PROTON_ENABLE_WAYLAND=0` session candidates
+are not the real fix and can be reverted. A patched gamescope must be built
+and installed before claiming the FPS limiter works.
 
-Reason: the panel is a fixed 60 Hz DSI panel with no VRR. Advertising VRR puts
-Steam on the variable-refresh limiter path; the frame limit may then be a
-no-op on this panel. `assert-alioth-overlay.py` now asserts this as
-`FPS limiter 不走 VRR`; the assertion passes.
+## Done: Wi-Fi after warm reboot (confirmed 2026-10-28)
 
-### Root cause found (2026-10-27): the Frame Steam launcher
+Symptom: after a normal reboot, Steam shows no Wi-Fi adapter and it cannot be
+enabled; a full shutdown and cold boot brings it back. This is **not** a PCIe
+or QCA6390 failure.
 
-The installed Steam process runs with:
-
-```text
-steam -cef-enable-debugging -deckard -gamepadui -steamdeck -steamos3 -vrgamepadui
-```
-
-That is the **Frame** launcher. Gamescope's frame limiter explicitly exempts
-windows that carry a VR overlay target:
-
-```cpp
-// gamescope src/steamcompmgr.cpp
-if ( w->isSteamStreamingClientVideo ) return false;
-return window_is_steam( w ) || w->oulTargetVROverlay.has_value() ||
-       w->isOverlay || w->isExternalOverlay || window_is_vr_scene_app( w );
-```
-
-The repo already carries a handheld launcher at
-`steamos-overlay/usr/share/deckard/RUNSTEAM.sh`. Its header says:
+The failed-boot journal shows the PCIe link and ath11k coming up normally:
 
 ```text
-Do not pass -deckard / -vrgamepadui: those switch the client beta to the
-internal Steam Frame build and wait on SteamVR.
+qcom-pcie 1c00000.pcie: PCIe Gen.2 x1 link up
+ath11k_pci 0000:01:00.0: qca6390 hw2.0
+ath11k_pci 0000:01:00.0: MAC_ADDR set to ...
 ```
 
-`apply-alioth-devr.sh` did not install it, so the phone kept the Frame
-launcher. The source now installs it and `assert-alioth-devr.sh` asserts that
-`STEAM_ARGS` does not contain `-deckard` or `-vrgamepadui`.
+But `NetworkManager` and `iwd` were inactive, and there was only:
 
-The manual atom test is consistent with this: setting
-`GAMESCOPE_FPS_LIMIT=30` on `:0` and on the game's `:1` did not drop the game
-FPS, because the game window is exempt rather than because the atom is missing.
+```text
+NetworkManager.service: Unit cannot be reloaded because it is inactive
+```
 
-### Status after installing the handheld launcher: FPS still does not work
+The cold-boot journal has both services active and `wlan0` connected. The
+warm-reboot failure is a userspace startup race after `steamos-manager`, not a
+kernel/PCIe failure.
 
-The user installed the handheld `RUNSTEAM.sh` and restarted Steam. The result:
+### Fix
 
-- more Performance-tab options appeared;
-- the TDP limiter works;
-- the FPS limiter still does not work;
-- the meaningless Refresh Rate option was removed from the source (60-only
-  panel, `STEAM_DISPLAY_REFRESH_LIMITS` unset).
+`alioth-overlay/etc/systemd/system/alioth-wifi-recover.service` runs after
+`steamos-manager.service` and starts `NetworkManager` and `iwd` if either is
+inactive. It is enabled through `multi-user.target.wants/`.
 
-So the Frame launcher was necessary for the Performance UI and TDP, but it was
-not sufficient for the FPS limiter. The remaining FPS causes are not yet
-identified. Do not claim the FPS limiter is fixed.
+Verified with a warm reboot:
 
-Possible next directions (not yet tested):
-
-- `DXVK_FRAME_RATE=30` in the game's Steam launch options; this caps DXVK
-  presents and is independent of gamescope's limiter.
-- MangoHud `fps_limit=30` through the active `MANGOHUD_CONFIG`/`MANGOHUD_CONFIGFILE`.
-- A nested per-game `gamescope --framerate-limit 30`.
-- `libstrangle`/an LD_PRELOAD limiter for OpenGL/Vulkan titles.
-
-### Pending tests
-
-1. Confirm the patch is in the installed session and reboot:
-
-   ```sh
-   grep -n 'VRR_SUPPORTED\|adaptive-sync' /usr/lib/steamos/gamescope-session
-   ```
-
-   Expect `VRR_SUPPORTED=0` and no `--adaptive-sync` argument.
-
-2. Use **Framerate Limit**, not **Refresh Rate**. The panel is fixed 60 Hz, so
-   the refresh-rate slider cannot change anything.
-
-3. Test gamescope's limiter directly from a Konsole launched inside Game Mode
-   (SSH has no display):
-
-   ```sh
-   xprop -root -f GAMESCOPE_FPS_LIMIT 32c -set GAMESCOPE_FPS_LIMIT 30
-   xprop -root GAMESCOPE_FPS_LIMIT
-   ```
-
-   Over SSH, first find Steam's environment and use
-   `DISPLAY=:0 XAUTHORITY=<path>`.
-
-4. Check that Steam received the limiter environment:
-
-   ```sh
-   systemctl --user show-environment | grep -E 'STEAM_GAMESCOPE|GAMESCOPE_LIMITER'
-   cat /run/user/1000/gamescope-steam.env | grep -E 'STEAM_GAMESCOPE|GAMESCOPE_LIMITER'
-   ```
-
-   `STEAM_GAMESCOPE_DYNAMIC_FPSLIMITER=1` and
-   `GAMESCOPE_LIMITER_FILE=...` must be present.
-
-5. Interpret:
-
-   - manual `GAMESCOPE_FPS_LIMIT=30` drops the game to 30 but the Steam slider
-     does nothing: gamescope works; the Frame Steam client UI is not applying
-     the limiter. This is the same class of UI limitation as the missing
-     profile selector.
-   - manual atom also does nothing: the limiter path is broken or the game
-     window is exempt. Record the game type and `xprop` output before changing
-     more code.
-
-Do not describe the FPS limiter as fixed until step 3 or 4 produces evidence.
+```text
+wlan0: connected: MIWIFI_AARG
+NetworkManager: active
+iwd: active
+alioth-wifi-recover: active (exited)
+```
 
 ## Done: suspend via power button (confirmed working)
 
@@ -332,6 +301,8 @@ Do not describe the FPS limiter as fixed until step 3 or 4 produces evidence.
 
 ```text
 alioth-overlay/etc/systemd/logind.conf.d/99-alioth-suspend.conf
+alioth-overlay/etc/systemd/system/alioth-wifi-recover.service
+alioth-overlay/etc/systemd/system/multi-user.target.wants/alioth-wifi-recover.service
 
 [Login]
 HandlePowerKey=suspend
@@ -385,24 +356,44 @@ tested build it did not need masking.
 Caveat: with USB attached, the USB gadget/ttyGS0 are wake sources and s2idle
 may wake immediately. The confirmed suspend test was on battery.
 
-## Pending: charger boot / `androidboot.mode`
+## Charger boot / `androidboot.mode` (implemented)
 
-Symptom: plugging in USB while the phone is off boots straight into SteamOS
-instead of staying dark and charging.
+Plugging in USB while the phone is off makes the bootloader add
+`androidboot.mode=charger`. Without a hold, Linux boots all the way into
+SteamOS and the phone cannot sit dark while charging.
 
-This is bootloader behavior, not something the kernel can simply turn off.
-The repo already has `steamos-overlay/usr/lib/steamos-arm/tablet-charger-hold`
-for Lenovo tablets. It:
+`alioth-overlay` now ships the charger hold:
 
-- checks `/proc/cmdline`, `/proc/bootconfig`, and
-  `/sys/firmware/devicetree/base/chosen/bootargs` for
+- `usr/lib/steamos-arm/tablet-charger-hold` reads `/proc/cmdline`,
+  `/proc/bootconfig`, and
+  `/sys/firmware/devicetree/base/chosen/bootargs`, looking for
   `androidboot.mode=charger` or `androidboot.mode=offmode_charging`;
-- holds before `display-manager`, dims the panel, and charges;
-- starts SteamOS when Power is held for one second;
-- powers off when the charger is removed.
+- `usr/lib/systemd/system/steamos-arm-tablet-charger.service` runs before
+  `display-manager.service`, is gated on `xiaomi,alioth`, and is enabled via
+  `usr/lib/systemd/system/multi-user.target.wants/steamos-arm-tablet-charger.service`;
+- the script blanks the backlights, quiets the kernel console, and shows a
+  large battery/charge screen for 10 seconds on a short Power press at the
+  panel's normal saved brightness. The `CHARGING` and
+  `HOLD POWER TO START STEAMOS` labels use a 5x5 block font (five rows high,
+  about 161 columns wide for the hold line);
+- while held, CPU scaling_max_freq and the GPU min/max are clamped to the
+  lowest available clocks (rechecked every 5 s); the original limits are
+  restored on release, unplug, or display-manager start;
+- holding Power for 1.5 seconds releases the hold and starts SteamOS;
+- unplugging the charger powers off after 5 seconds;
+- if a SteamOS session/display manager starts while the hold is still up, a
+  watchdog restores the console/backlight and exits, so no Python process is
+  left behind. The service itself is `Type=oneshot`, `RemainAfterExit=yes`;
+  after a normal start there is no process and no RAM used.
 
-It is not enabled for alioth (`ConditionFirmware` lists only Lenovo devices),
-and the script is not installed in the alioth rootfs.
+`scripts/apply-alioth-overlay.sh` installs these files into the rootfs, so a
+normal `make-steamos-alioth.sh --install` plus flash includes the feature.
+`scripts/assert-alioth-overlay.py` checks the script, the alioth condition,
+the enable link, and the watchdog.
+
+Limits: this only applies to a charger-insertion boot. A warm reboot with the
+charger attached does not carry `androidboot.mode=charger`, and the hold is a
+dark pre-display-manager state, not true hardware-off charging.
 
 ### Check result (2026-10-27)
 
@@ -412,29 +403,12 @@ The previous boot's kernel command line in `journalctl -b -1 -k` contains:
 androidboot.mode=charger
 ```
 
-So the flag is present on a charger-insertion boot; the dark charger-hold
-feature is implementable. The current (normal) boot does not carry it.
-
-### How to re-check
-
-Boot the phone with the charger and inspect the bootloader arguments:
+The current (normal) boot does not carry it. To re-check:
 
 ```sh
 tr ' ' '\n' < /proc/cmdline | grep -iE 'androidboot.mode|offmode'
 cat /proc/bootconfig 2>/dev/null | grep -iE 'androidboot.mode|offmode'
 ```
-
-- If `androidboot.mode=charger` or `offmode_charging` is present, adapt the
-  charger-hold script/service for `xiaomi,alioth`. It needs to run before
-  `display-manager.service`, and must grab the power key (or otherwise avoid a
-  conflict with `HandlePowerKey=suspend`) while it is in charger mode.
-- If neither argument is present, there is no reliable way to tell a
-  charger-insertion boot from a normal boot that already has a charger
-  connected. In that case do not promise a dark charging mode; the phone will
-  keep booting SteamOS.
-
-Record the exact command-line/bootconfig output in this file before changing
-the source.
 
 ## Dropped: battery temperature in MangoHud
 
@@ -466,26 +440,29 @@ Both passed at the end of these changes. They cover:
 
 - the `TdpLimit1` / `GpuPerformanceLevel1` back end and remotes, with no `PerformanceProfile1`;
 - the orientation `left` drop-in and touch matrix;
-- the FPS VRR-off source change;
+- the FPS session candidates (`vblank_mode=3`, `PROTON_ENABLE_WAYLAND=0`) and
+  the VRR-off source change; they do not yet cap the app;
 - the 60-only Refresh Rate removal;
-- the logind `HandlePowerKey=suspend` drop-in.
+- the logind `HandlePowerKey=suspend` drop-in;
+- the warm-reboot Wi-Fi recovery service and its enable link.
 
 `python3 -m py_compile` on the changed Python files passed.
 `git diff --check` passed.
 
-Suspend via the power button and Razer Kishi touch orientation are now
-confirmed working on the phone and are built into the source. No on-device
-test has proved the FPS limiter or charger hold; those remain the pending
-items above.
+Suspend, Razer Kishi touch orientation, and warm-reboot Wi-Fi recovery are
+confirmed working. The FPS limiter is **not**; A/B showed 62 FPS at both
+limits. Charger hold and the FPS limiter remain pending.
 
 ## Files changed (source)
 
-The orientation/power/system code is committed in `31e0ca6`. The documentation
-edits in this file and the READMEs are uncommitted at handoff.
+The orientation/power/system code is committed in `31e0ca6`. The unproven FPS
+session candidates and the documentation edits are uncommitted.
 
 ```text
 alioth-overlay/README.md
 alioth-overlay/etc/systemd/logind.conf.d/99-alioth-suspend.conf
+alioth-overlay/etc/systemd/system/alioth-wifi-recover.service
+alioth-overlay/etc/systemd/system/multi-user.target.wants/alioth-wifi-recover.service
 alioth-overlay/etc/systemd/user/gamescope-session.service.d/99-orientation.conf
 alioth-overlay/usr/lib/steamos-arm/steamos-arm-power
 alioth-overlay/usr/lib/systemd/system/steamos-arm-power.service
@@ -493,10 +470,11 @@ alioth-overlay/usr/lib/systemd/system/multi-user.target.wants/steamos-arm-power.
 alioth-overlay/usr/lib/udev/rules.d/71-alioth-flip.rules
 alioth-overlay/usr/share/dbus-1/system.d/org.steamos_arm.Power.conf
 alioth-overlay/usr/share/steamos-manager/remotes.d/50-steamos-arm.toml
-steamos-overlay/usr/lib/steamos/gamescope-session    # VRR off, no --adaptive-sync, no Refresh Rate
+steamos-overlay/usr/lib/steamos/gamescope-session    # VRR off, vblank_mode=3, PROTON_ENABLE_WAYLAND=0, no Refresh Rate
 steamos-overlay/usr/lib/steamos/gamescope-onready    # clears stale STEAM_DISPLAY_REFRESH_LIMITS
 steamos-overlay/usr/share/deckard/RUNSTEAM.sh         # handheld launcher, now installed
 scripts/apply-alioth-devr.sh                          # install RUNSTEAM.sh
+scripts/apply-alioth-overlay.sh                       # optional Kishi flip (ALIOTH_ORIENTATION_FLIP)
 scripts/assert-alioth-overlay.py
 scripts/assert-alioth-devr.sh                         # no -deckard/-vrgamepadui
 alioth-overlay/usr/lib/steamos-arm/power_limits.py
@@ -504,6 +482,15 @@ alioth-overlay/usr/lib/steamos-arm/alioth-swapfile-setup
 alioth-overlay/usr/lib/systemd/system/alioth-swapfile-setup.service
 alioth-overlay/usr/lib/systemd/system/swapfile.swap
 alioth-overlay/usr/share/steamos-manager/devices/xiaomi-alioth.toml
+flash-alioth.sh                                      # English, migration prompt
+make-steamos-alioth.sh                               # English, boot-migrate, SteamVR removal
+alioth-overlay/usr/lib/steamos-arm/alioth-super-migrate
+alioth-overlay/usr/lib/systemd/system/alioth-super-migrate.service
+alioth-overlay/usr/lib/systemd/system/basic.target.wants/alioth-super-migrate.service
+steamos-overlay/usr/lib/systemd/zram-generator.conf.d/60-steamos-arm-zram.conf
+scripts/assert-alioth-flash.sh
+scripts/assert-alioth-kit.sh
+scripts/assert-alioth-overlay-applied.sh              # both Kishi flip modes
 ```
 
 Untracked deployment artifacts (git-ignored under `work/`):
@@ -511,10 +498,99 @@ Untracked deployment artifacts (git-ignored under `work/`):
 ```text
 work/alioth-power-ui.tar
 work/alioth-power-ui-install.sh
+work/host-tools/usr/bin/img2simg
+work/host-tools/usr/bin/simg2img
+work/host-tools/usr/bin/simg_dump
 ```
 
 Do not commit the extracted firmware or the installed system's device-unique
 identifiers. Do not claim the pending tests passed without measuring them.
+
+## 2026-10-28: RAM reduction, zram source change, extra storage
+
+### Source changes
+
+- zram: `steamos-overlay/usr/lib/systemd/zram-generator.conf.d/60-steamos-arm-zram.conf`
+  now sets `zram-size = 3584` (3584 MiB = 3.5 GiB) and
+  `compression-algorithm = lzo-rle`. `scripts/assert-alioth-devr.sh` checks
+  those values. The live phone still reports 4G lz4 because the image was not
+  rebuilt/reflashed.
+- Frame/SM8550 leftovers are masked in `scripts/apply-alioth-devr.sh`:
+  `gpu-trace.service`, `iris-driver-rebind.service`,
+  `steamos-log-submitter.service`. `steamos-manager.service` only `Wants=`
+  the log submitter (weak, not `Requires=`); the `steamos_log_submitter`
+  Python module and the GPU-reset/devcoredump udev hooks are kept, so only
+  the idle daemon is removed.
+- `steamos-log-submitter` automatic uploads are off. `gpu-trace`'s manual
+  binary remains; only the daemon is stopped. `iris-driver-rebind` is
+  SM8550/Iris-only; alioth is SM8250 and the condition path is absent.
+- `/opt/steamvr` is deleted at build time. SteamVR units, `dsp_service`,
+  `steamvr-plasma`, and `steamvr-web-debug-portforward` are masked.
+- Opt-in extra storage: `make-steamos-alioth.sh` builds `boot-migrate.img`
+  with `alioth.supermigrate=1`; `flash-alioth.sh --install` asks whether to
+  use it, with an explicit warning that Android's system images are erased.
+  On first boot `alioth-super-migrate` formats `super`, copies the Set B list
+  (~4.5 GB), creates the 2 GiB swap file, writes fstab + bind mounts, and
+  deletes the originals. It is one-time via `/var/lib/alioth-super-migrated`,
+  idempotent, and swap is `/swapfile -> /var/lib/steamos-extra/swapfile`;
+  the setup fails closed if the mount is missing.
+- `flash-alioth.sh` and `make-steamos-alioth.sh` are fully English. The build
+  uses `work/host-tools/usr/bin/img2simg`/`simg2img` when present so
+  `userdata.img` is sparse.
+- The Razer Kishi 180-degree flip is optional. `make --install` asks
+  `Apply the Razer Kishi 180-degree render+touch flip? [Y/n]`; automation can
+  set `ALIOTH_ORIENTATION_FLIP=0` (skip both files) or `1` (include both).
+  `apply-alioth-overlay.sh` defaults to 1 for direct callers.
+- Assertions/checks updated: `assert-alioth-flash.sh` covers the migration
+  prompt; `assert-alioth-devr.sh` checks 31 masks; `assert-alioth-overlay.py`
+  checks the migration/swap; `assert-alioth-kit.sh` checks masks,
+  `boot-migrate.img`, and SteamVR absence.
+
+### Live phone test (2026-10-28, 192.168.1.33)
+
+Baseline: `MemTotal` 5548 MB, used 2122 MB, available 3425 MB; zram0 4G lz4;
+`/swapfile` 2G; `gpu-trace` active ~25 MB RSS (110.4 MB peak),
+`steamos-log-submitter` active ~42 MB RSS, `iris-driver-rebind` inactive.
+
+Applied:
+
+```sh
+sudo systemctl mask --now gpu-trace.service iris-driver-rebind.service \
+  steamos-log-submitter.service
+```
+
+Result: all three `inactive`/`masked`; `steamos-manager` still active; Steam
+and gamescope still active; user session 0 failed units; used 2066 MB,
+available 3481 MB (~+56 MB). No new failed units; `rauc.service` and
+`usb-gadget.service` were already failed. Masks exist in
+`/etc/systemd/system/` and `/var/lib/overlays/etc/upper/systemd/system/`, so
+they should persist. No reboot was done. The Steam UI GPU-trace feature and
+automatic Valve log uploads are off; manual `gpu-trace` and the udev hooks
+remain.
+
+Revert:
+
+```sh
+sudo systemctl unmask gpu-trace.service iris-driver-rebind.service \
+  steamos-log-submitter.service
+sudo systemctl start gpu-trace.service steamos-log-submitter.service
+```
+
+### Pending
+
+- Rebuild: `ALIOTH_FW_DIR="$PWD/work/alioth-fw" ./make-steamos-alioth.sh --install`
+  (needs sudo). The old kit predates zram 3.5 GiB/lzo-rle, SteamVR removal,
+  the new masks, and `boot-migrate.img`.
+- Flash with `./flash-alioth.sh --install`; answer the extra-storage prompt
+  only if Android's system images may be erased.
+- After reboot: confirm `zramctl` shows 3584 MiB/lzo-rle; confirm the three
+  masks persist; run the assertion suite (kit/firstboot need sudo); play a
+  game and watch `free -m`, `zramctl`, and `/proc/pressure/memory`.
+- Non-root tests on 2026-10-28: `assert-alioth-flash.sh`,
+  `assert-alioth-devr.sh`, `assert-alioth-overlay-applied.sh`, and
+  `assert-alioth-overlay.py` pass. The overlay-applied test runs both the
+  default orientation pair and `ALIOTH_ORIENTATION_FLIP=0` (both files
+  skipped, base `70-alioth.rules` kept).
 
 ## Pending investigation: volume buttons as volume + power chords
 

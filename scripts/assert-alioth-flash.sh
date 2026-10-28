@@ -52,8 +52,9 @@ chmod +x "$BIN/true-assert"
 WORKDIR="$T/work"; IMGD="$WORKDIR/steamos-alioth"; mkdir -p "$IMGD"
 head -c 1024 /dev/zero >"$IMGD/boot.img"
 head -c 1024 /dev/zero >"$IMGD/boot-debug.img"
+head -c 1024 /dev/zero >"$IMGD/boot-migrate.img"
 head -c 4096 /dev/zero >"$IMGD/userdata.img"
-( cd "$IMGD" && sha256sum boot.img boot-debug.img userdata.img >SHA256SUMS )
+( cd "$IMGD" && sha256sum boot.img boot-debug.img boot-migrate.img userdata.img >SHA256SUMS )
 # 固件出处凭据。--install 要求看到它才肯写 userdata（见 flash-alioth.sh 的
 # check_firmware_provenance）。基准用例要跑通，所以这里先写上；下面有专门的
 # 用例把它拿掉和换成 GENERIC-FIRMWARE。
@@ -83,13 +84,24 @@ fi
 # --- 0. 基准：一次正常的 --install 必须真的跑完并真的写东西 -----------
 # 没有这一条，下面「没出现被禁分区」之类的断言会因为脚本在用法检查处
 # 就退出而**空过** —— 一个为了错误的理由而通过的测试比没有测试更坏。
-run --install ERASE a
+run --install $'n\nERASE' a
 ok_rc=$?
 ok_writes="$(grep -cE '^(flash|erase) ' "$T/fblog")"
 if [[ $ok_rc -eq 0 && "$ok_writes" -gt 0 ]]; then
   pass "基准 --install" "退出 0，执行了 $ok_writes 次写操作"
 else
   fail "基准 --install" "退出 $ok_rc，写操作 $ok_writes 次 —— 下面几条据此判定，否则会空过"
+fi
+
+# --- 0b. 可选的迁移镜像 -----------------------------------------------
+# 操作者选 y 时，--install 必须刷带 migration token 的 boot 镜像，而不是
+# boot.img。测试用假镜像，只检查选择逻辑确实换了文件。
+run --install $'y\nERASE' a
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'boot-migrate.img' "$T/fblog"; then
+  pass "迁移镜像选择" "选 y 时刷的是 boot-migrate.img"
+else
+  fail "迁移镜像选择" "退出 $rc，fblog: $(tr '\n' ';' <"$T/fblog" | head -c 120)"
 fi
 
 # --- 1. 禁止分区 -------------------------------------------------------
@@ -134,7 +146,7 @@ grep -qE 'flash userdata' "$T/fblog" \
 # 要的是正面凭据，不是「没人反对」—— 否则这个检查存在之前构建的 kit、手工
 # 拷过来的 kit，都会被当成好的。
 mv "$IMGD/DEVICE-FIRMWARE" "$T/DEVICE-FIRMWARE.keep"
-run --install ERASE a
+run --install $'n\nERASE' a
 rc=$?
 wrote="$(grep -cE '^(flash|erase) ' "$T/fblog")"
 if [[ $rc -ne 0 && "$wrote" -eq 0 ]]; then
@@ -144,7 +156,7 @@ else
 fi
 
 echo "generic" >"$IMGD/GENERIC-FIRMWARE"
-run --install ERASE a
+run --install $'n\nERASE' a
 rc=$?
 wrote="$(grep -cE '^(flash|erase) ' "$T/fblog")"
 if [[ $rc -ne 0 && "$wrote" -eq 0 ]]; then
@@ -154,7 +166,7 @@ else
 fi
 
 # 逃生门要真的能用，否则下一个人会去改脚本而不是设这个变量。
-EXTRA_GENERIC_OK=1 run --install ERASE a
+EXTRA_GENERIC_OK=1 run --install $'n\nERASE' a
 rc=$?
 wrote="$(grep -cE '^(flash|erase) ' "$T/fblog")"
 if [[ $rc -eq 0 && "$wrote" -gt 0 ]]; then
@@ -178,7 +190,7 @@ mv "$T/DEVICE-FIRMWARE.keep" "$IMGD/DEVICE-FIRMWARE"
 
 # --- 4. 确认字 ---------------------------------------------------------
 # 没输入 ERASE 就不许有任何写操作。
-run --install YES a
+run --install $'n\nYES' a
 rc=$?
 wrote="$(grep -cE '^(flash|erase) ' "$T/fblog")"
 if [[ $rc -ne 0 && "$wrote" -eq 0 ]]; then
@@ -190,7 +202,7 @@ fi
 # --- 5. getvar 异常（Review Focus）------------------------------------
 # 把异常输出当默认值继续，就是不可逆地写错分区。
 for bogus in "" unknown; do
-  run --install ERASE "$bogus"
+  run --install $'n\nERASE' "$bogus"
   rc=$?
   wrote="$(grep -cE '^(flash|erase) ' "$T/fblog")"
   label="getvar 异常 current-slot='${bogus:-<空>}'"

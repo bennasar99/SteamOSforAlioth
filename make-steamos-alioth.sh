@@ -15,6 +15,13 @@
 set -euo pipefail
 
 PORT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Prefer tools bundled under work/host-tools when present (dtc, img2simg,
+# simg2img). Keeping img2simg here is what makes userdata.img sparse, which is
+# what fastboot can flash within the device's 768 MiB download limit.
+HOST_TOOLS="${STEAMOS_WORK:-${PORT_ROOT}/work}/host-tools/usr/bin"
+if [[ -d "$HOST_TOOLS" ]]; then
+  PATH="${HOST_TOOLS}:$PATH"
+fi
 KCOMMON="${PORT_ROOT}/external-and-mods/kernel-common"
 SOC_DIR="${PORT_ROOT}/external-and-mods/kernel-sm8250"
 DTB=sm8250-xiaomi-alioth
@@ -33,37 +40,44 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-copy)    SKIP_COPY=1 ;;
     --from-rootfs)  SRC_ROOTFS="$2"; shift ;;
-    *) die "不认识的参数: $1" ;;
+    *) die "unknown argument: $1" ;;
   esac
   shift
 done
 case "$MODE" in
   --kernel-only|--install) ;;
-  *) die "用法: $0 --kernel-only | --install [--from-rootfs DIR] [--skip-copy]" ;;
+  *) die "usage: $0 --kernel-only | --install [--from-rootfs DIR] [--skip-copy]" ;;
 esac
 
-# --install 没有机内签名固件就不要构建。
+# --install must not build without device-signed firmware.
 #
-# 2026-10-24 的独立审查指出的不对称：boot 镜像的那套规则是**接线进写入路径**
-# 的（flash-alioth.sh 在任何写之前跑 assert-alioth-boot-image.sh），而「固件
-# 是不是机内签名版」只靠记性 —— 原来这里只打印四行 `!!` 然后继续，照样产出
-# 一个完整的 9 GB kit。那之后的事：rsync 跑十几分钟、警告滚出屏幕、
-# `flash-alioth.sh --install`、输入 ERASE，**Android 的 /data 就此消失**，
-# 然后设备黑屏无声，因为小米的 TrustZone 拒收 linux-firmware 的通用签名
-# a650_zap.mbn。而要重新取固件，得从一台 Android 已经被擦掉的手机上取。
+# The 2026-10-24 review pointed out the asymmetry: the boot-image rules are
+# wired into the write path (flash-alioth.sh runs
+# assert-alioth-boot-image.sh before any write), while "is the firmware the
+# phone's own signed copy?" relied on memory -- this script used to print
+# four `!!` lines and keep going, still producing a complete 9 GB kit. What
+# follows is: rsync runs for ten minutes, the warning scrolls off,
+# `flash-alioth.sh --install` runs, the operator types ERASE, Android's /data
+# is gone, and the installed system is a black screen with no sound because
+# Xiaomi's TrustZone rejects linux-firmware's generically signed a650_zap.mbn.
+# Recovering the firmware then requires an Android that has already been
+# erased.
 #
-# 所以这个检查放在最前面：在 rsync 之前、在任何耗时的事情之前就退出。
-# 真要构建一个明知没有 GPU 和声音的测试镜像，设 ALIOTH_FW_GENERIC_OK=1 —— 它
-# 会在 kit 里留下一个 GENERIC-FIRMWARE 标记，而 flash-alioth.sh --install 看到
-# 那个标记会再拦一次（两次 opt-in，而且产物自己带着出处）。
+# So this check is first: before rsync, before anything slow. To build a test
+# image that you know has no GPU and no sound, set ALIOTH_FW_GENERIC_OK=1 --
+# it leaves a GENERIC-FIRMWARE marker in the kit, and flash-alioth.sh
+# --install refuses that marker too (two opt-ins, and the artifact carries its
+# own provenance).
 if [[ "$MODE" == --install && "${ALIOTH_FW_GENERIC_OK:-}" != 1 ]]; then
   [[ -n "${ALIOTH_FW_DIR:-}" ]] \
-    || die "--install 需要 ALIOTH_FW_DIR —— 没有机内签名固件，装出来的系统是黑屏加没声音。
-     先跑 scripts/extract-alioth-firmware.sh（见它的头注释）取出这台手机自己的
-     a650_zap.mbn 和 adsp.mbn，再设 ALIOTH_FW_DIR=<产物目录> 重跑。
-     明知要造一个没有 GPU 和声音的测试镜像：ALIOTH_FW_GENERIC_OK=1"
+    || die "--install requires ALIOTH_FW_DIR -- without device-signed firmware
+     the installed system is a black screen with no sound. First run
+     scripts/extract-alioth-firmware.sh (see its header) to pull this phone's
+     own a650_zap.mbn and adsp.mbn, then rerun with
+     ALIOTH_FW_DIR=<output-dir>. To deliberately build a test image with no
+     GPU and no sound: ALIOTH_FW_GENERIC_OK=1"
   [[ -d "${ALIOTH_FW_DIR}" ]] \
-    || die "ALIOTH_FW_DIR=${ALIOTH_FW_DIR} 不是一个目录"
+    || die "ALIOTH_FW_DIR=${ALIOTH_FW_DIR} is not a directory"
 fi
 
 # Xiaomi's ABL. These are pmaports' deviceinfo values for this device
@@ -84,9 +98,9 @@ SECOND_ADDR=0x00F00000
 
 img="${KOUT}/boot/Image"
 dtb="${KOUT}/dtbs/${DTB}.dtb"
-[[ -n "$KOUT" && -d "$KOUT" ]] || die "没有内核输出目录（KERNEL_OUT=${KERNEL_OUT:-默认}）"
-[[ -s "$img" ]] || die "没有 $img —— kernel-sm8250/soc.env 里需要 KEEP_IMAGE=1"
-[[ -s "$dtb" ]] || die "没有 $dtb —— soc.env 的 DTBS 里要有 $DTB"
+[[ -n "$KOUT" && -d "$KOUT" ]] || die "no kernel output directory (KERNEL_OUT=${KERNEL_OUT:-default})"
+[[ -s "$img" ]] || die "missing $img -- kernel-sm8250/soc.env needs KEEP_IMAGE=1"
+[[ -s "$dtb" ]] || die "missing $dtb -- soc.env DTBS must contain $DTB"
 
 mkdir -p "$OUT"
 
@@ -104,7 +118,8 @@ mkdir -p "$OUT"
 # Only alioth's DTB goes in. The kit's 11-DTB KERNEL would also match
 # correctly -- board-id <44 0> is unique among them -- but there is no
 # reason to hand this bootloader ten other boards' device trees.
-pack_boot() {   # pack_boot <输出文件名>
+pack_boot() {   # pack_boot <output-file> [extra cmdline token]
+local extra="${2:-}"
 payload="${OUT}/payload.gz"
 gzip -9 -n -c "$img" >"$payload"
 cat "$dtb" >>"$payload"
@@ -123,8 +138,8 @@ cat "$dtb" >>"$payload"
 # its default the initramfs looks for a partition called ROCKNIX and, if it
 # found one, would mount it read-write and write a boot log into it. No
 # alioth partition carries that name, so today nothing is written -- but
-# "禁止写入" is a hard constraint, and this turns it from a coincidence into
-# a guarantee.
+# "no writes" is a hard constraint, and this turns it from a coincidence
+# into a guarantee.
 # steamos.usbshell=1 is the single switch that starts the USB gadget shell
 # (ACM serial + a root shell on 172.16.42.1:23) -- initramfs/init does
 # nothing of the sort without it, and that is the other log channel. The
@@ -162,8 +177,8 @@ cat "$dtb" >>"$payload"
 #
 # That matters because it is the escape hatch when userspace wedges, which
 # is not hypothetical: the debug shell and the network listener both died
-# across a host-mode test and left no way into a live kernel. It is reachable from
-# the panel only -- u_serial.c has no sysrq handling at all, so the ACM
+# across a host-mode test and left no way into a live kernel. It is reachable
+# from the panel only -- u_serial.c has no sysrq handling at all, so the ACM
 # console cannot deliver one -- but CONFIG_VT=y, VT_CONSOLE=y and a USB-C
 # keyboard enumerating in host mode make Alt+SysRq+B a warm reboot that
 # keeps DRAM.
@@ -174,25 +189,34 @@ cat "$dtb" >>"$payload"
 # encrypted f2fs, so init resolves it at once and the ext4 mount then fails
 # on the read-only superblock probe, without writing anything, and drops to
 # a shell. That failure IS the expected phase-1 outcome.
-# initcall_blacklist=simpledrm_platform_driver_init：让 msm 拿到 DRM minor 0。
+# initcall_blacklist=simpledrm_platform_driver_init: lets msm get DRM minor 0.
 #
-# 镜像自带的 MangoHud 把 GPU 占用率的来源路径写死成
-# /sys/kernel/debug/dri/0/perf_now（上游 master 已改成遍历
-# /sys/class/drm/<node>/device/drm 找 card*，但这个版本还没有）。而这台机器上
-# card0 不存在：simpledrm 开机早期为 /chosen/framebuffer 注册，占掉 minor 0，
-# msm 通过 aperture 接管后 simpledrm 退场，可 minor 号不回收 —— 于是 msm 落在
-# dri/1，MangoHud 读到的是不存在的文件，面板上就恒为 0。Frame 上 msm 就是
-# card0，Valve 才敢写死。
+# The image's MangoHud hardcodes the GPU-usage source path as
+# /sys/kernel/debug/dri/0/perf_now (upstream master now walks
+# /sys/class/drm/<node>/device/drm to find card*, but this version does not).
+# On this phone card0 does not exist: simpledrm registers for
+# /chosen/framebuffer early and takes minor 0; after msm takes over via the
+# aperture simpledrm leaves, but the minor number is not recycled -- so msm
+# lands on dri/1, MangoHud reads a nonexistent file, and the panel always
+# shows 0. On the Frame msm is card0, which is why Valve could hardcode it.
 #
-# 配置里 CONFIG_DRM_SIMPLEDRM 仍然是 y，屏蔽只在 cmdline 这一层 —— 去掉这个
-# token 就全恢复。代价是失去 msm 绑定之前那几秒的 framebuffer 控制台（阶段 1
-# 依赖的那条通道）。msm 绑定之后 fbcon 走 CONFIG_DRM_MSM_KMS_FBDEV，面板上的
-# 控制台照旧。真要调早期启动，把这个 token 删掉重做镜像即可。
+# CONFIG_DRM_SIMPLEDRM remains y in the config; the mask is only at the
+# cmdline layer -- removing this token restores everything. The cost is
+# losing the framebuffer console for the few seconds before msm binds (the
+# channel phase 1 depends on). After msm binds, fbcon goes through
+# CONFIG_DRM_MSM_KMS_FBDEV and the console on the panel is unchanged. To
+# really debug early boot, remove this token and rebuild.
 cmdline="$(
   CMDLINE_QUIET=0 \
   KERNEL_CMDLINE_EXTRA="ft8756.ignore_id=1 panic=120 steamos.usbshell=1 steamos.root=PARTLABEL=userdata steamos.bootlabel=steamos-arm-no-boot-partition initcall_blacklist=simpledrm_platform_driver_init" \
   bash -c "source '${SOC_DIR}/soc.env'; source '${KCOMMON}/cmdline.sh'; build_cmdline PARTLABEL=userdata"
 )"
+# boot-migrate.img carries this token so the first-boot migration service
+# knows the operator opted into putting static SteamOS data on the Android
+# system partition. The normal boot.img has no token.
+if [[ -n "$extra" ]]; then
+  cmdline="$cmdline $extra"
+fi
 
 # No --ramdisk: EMBED_INITRAMFS=1 puts the initramfs inside the Image, and
 # mkbootimg-v0.py then writes the same dummy ramdisk ROCKNIX does.
@@ -216,9 +240,10 @@ rm -f "$payload"
 echo "cmdline: $cmdline"
 }
 
-# SHA256SUMS 覆盖 OUT 里现有的全部镜像。两个模式共用这个目录，而
-# flash-alioth.sh 会 `sha256sum -c` 它 —— 只写自己那一个的话，另一个模式
-# 产出的镜像就会从校验里消失。
+# SHA256SUMS covers every image currently in OUT. Both modes share this
+# directory, and flash-alioth.sh runs `sha256sum -c` on it -- writing only
+# this mode's image would make the other mode's image disappear from the
+# check.
 sums() { (cd "$OUT" && sha256sum ./*.img >SHA256SUMS); }
 
 if [[ "$MODE" == --kernel-only ]]; then
@@ -227,25 +252,27 @@ if [[ "$MODE" == --kernel-only ]]; then
   echo "kernel:  $(basename "$KOUT") ($(readlink -f "$KOUT"))"
   ls -l "${OUT}/boot-debug.img"
   echo
-  echo "刷机: ./flash-alioth.sh --test"
+  echo "flash: ./flash-alioth.sh --test"
   exit 0
 fi
 
 # ---------------------------------------------------------------------------
-# --install：整机镜像
+# --install: full system image
 #
-# 不调上游的 scripts/apply-overlays.sh（本仓库已不再带它，见下）。那个脚本要求有编译好的 gamescope
-# （第 37 行 die），而 alioth 按 spec §4 原样用 Valve 的 rootfs —— 里面
-# 的 gamescope、Steam、FEX、Turnip、InputPlumber 都是现成的，没有理由为了
-# 跑通一个前置检查去编一份替换品。这正是 REDMAGIC 6 的做法：
-# make-steamos-sm8350.sh 调的是 177 行的 apply-overlays-sm8350.sh，
-# 同样不碰那个大脚本。
+# This does not call upstream scripts/apply-overlays.sh (this repository no
+# longer carries it, see below). That script requires a compiled gamescope
+# (it dies at line 37), while alioth uses Valve's rootfs unchanged per spec
+# §4 -- its gamescope, Steam, FEX, Turnip and InputPlumber are already
+# present. There is no reason to compile a replacement just to satisfy a
+# prerequisite check. This is exactly what REDMAGIC 6 does:
+# make-steamos-sm8350.sh calls apply-overlays-sm8350.sh at line 177 and also
+# avoids the big script.
 #
-# 于是本模式自己做 apply-overlays-sm8350.sh 做的那三件事：
-#   1. 内核模块 + 固件
-#   2. sm8250-overlay（主要是 steamos-powerbuttond.service —— spec §7.1
-#      点名要它，Frame 自带的 unit 依赖 SteamVR）
-#   3. alioth-overlay（scripts/apply-alioth-overlay.sh）
+# So this mode does the three things apply-overlays-sm8350.sh does:
+#   1. kernel modules + firmware
+#   2. sm8250-overlay (mainly steamos-powerbuttond.service -- spec §7.1 names
+#      it; the Frame's own unit depends on SteamVR)
+#   3. alioth-overlay (scripts/apply-alioth-overlay.sh)
 # ---------------------------------------------------------------------------
 
 KREL="$(basename "$KOUT")"
@@ -253,27 +280,50 @@ KIT="$OUT"
 S8250_OVL="${PORT_ROOT}/sm8250-overlay"
 
 for c in rsync mkfs.ext4 losetup uuidgen; do
-  command -v "$c" >/dev/null || die "缺少 $c"
+  command -v "$c" >/dev/null || die "missing $c"
 done
-[[ -d "$KOUT/modules/$KREL" ]] || die "没有 $KOUT/modules/$KREL"
-[[ -d "$KOUT/firmware" ]] || die "没有 $KOUT/firmware"
+[[ -d "$KOUT/modules/$KREL" ]] || die "missing $KOUT/modules/$KREL"
+[[ -d "$KOUT/firmware" ]] || die "missing $KOUT/firmware"
 
-# 1. 复制共享 rootfs。源永不修改 —— 下一次构建还要从同一个干净的树开始。
+# The Razer Kishi needs a paired 180-degree flip of both render and touch.
+# It is optional: the base orientation is correct for Bluetooth/other USB-C
+# controllers or no controller. Ask before the long rootfs copy; automation
+# can set ALIOTH_ORIENTATION_FLIP=0/1 instead.
+if [[ -n "${ALIOTH_ORIENTATION_FLIP:-}" ]]; then
+  case "$ALIOTH_ORIENTATION_FLIP" in
+    0|1) ORIENTATION_FLIP="$ALIOTH_ORIENTATION_FLIP" ;;
+    *) die "ALIOTH_ORIENTATION_FLIP must be 0 or 1, got '$ALIOTH_ORIENTATION_FLIP'" ;;
+  esac
+elif [[ -t 0 ]]; then
+  printf 'Apply the Razer Kishi 180-degree render+touch flip? [Y/n] '
+  read -r answer || answer=""
+  case "$answer" in
+    n|N|no|NO) ORIENTATION_FLIP=0 ;;
+    *) ORIENTATION_FLIP=1 ;;
+  esac
+else
+  ORIENTATION_FLIP=1
+  echo "!! no terminal for the orientation prompt; defaulting to the Razer Kishi flip (set ALIOTH_ORIENTATION_FLIP=0 or 1 to choose)"
+fi
+echo "==> Razer Kishi orientation flip: $([[ "$ORIENTATION_FLIP" == 1 ]] && echo enabled || echo disabled)"
+
+# 1. Copy the shared rootfs. The source is never modified -- the next build
+#    starts from the same clean tree.
 if [[ "$SKIP_COPY" -eq 1 ]]; then
-  [[ -x "$R/usr/bin/bash" ]] || die "--skip-copy 但 $R 里没有 rootfs"
-  echo "==> 跳过复制，沿用 $R"
+  [[ -x "$R/usr/bin/bash" ]] || die "--skip-copy but $R has no rootfs"
+  echo "==> skipping copy; reusing $R"
 else
   [[ -x "${SRC_ROOTFS}/usr/bin/bash" ]] \
-    || die "没有源 rootfs ${SRC_ROOTFS} —— 先跑 scripts/fetch-steamos-rootfs.sh"
+    || die "no source rootfs ${SRC_ROOTFS} -- run scripts/fetch-steamos-rootfs.sh first"
   [[ "$(readlink -f "$SRC_ROOTFS")" != "$(readlink -f "$R")" ]] \
-    || die "源和目标必须不同（这个模式会改目标）"
-  echo "==> 复制 rootfs ${SRC_ROOTFS} → ${R}"
+    || die "source and destination must differ (this mode modifies the destination)"
+  echo "==> copying rootfs ${SRC_ROOTFS} -> ${R}"
   sudo mkdir -p "$R"
   sudo rsync -aHAX --numeric-ids --delete "${SRC_ROOTFS}/" "${R}/"
 fi
 
-# 2. 内核模块与固件。
-echo "==> 装入内核模块与固件（$KREL）"
+# 2. Kernel modules and firmware.
+echo "==> installing kernel modules and firmware ($KREL)"
 sudo mkdir -p "$R/usr/lib/modules" "$R/usr/lib/firmware"
 sudo rm -rf "$R"/usr/lib/modules/*
 sudo cp -a "$KOUT/modules/$KREL" "$R/usr/lib/modules/$KREL"
@@ -281,239 +331,279 @@ sudo rsync -a "$KOUT/firmware/" "$R/usr/lib/firmware/"
 sudo mkdir -p "$R/opt/steamos-alioth/$KREL"
 sudo cp -a "$KOUT/config-$KREL" "$KOUT/dtbs" "$R/opt/steamos-alioth/$KREL/"
 
-# 2a. 机内签名固件。必须盖在 linux-firmware 之后 —— 文件名一样，要的就是
-#     后写的赢。
+# 2a. Device-signed firmware. It must overwrite linux-firmware -- the file
+#     names are identical and the later write is the one that wins.
 #
-#     alioth 的 TrustZone 拒收 linux-firmware 里所有通用签名的 PAS 镜像
-#     （qcom_scm_pas_init_image -> -EINVAL，内核只说 "error -22 initializing
-#     firmware"）。两份文件连大小都和 linux-firmware 的一样，只有签名不同，
-#     所以「文件在不在」这种检查发现不了。没有它们的后果：
-#       a650_zap -> GPU hw init failed -110 -> gamescope 找不到物理设备
-#                -> sddm 死循环 -> 一块**黑屏**
-#       adsp     -> q6afe 不上线 -> PipeWire 只有 Dummy Output
+#     alioth's TrustZone rejects every generically signed PAS image in
+#     linux-firmware (qcom_scm_pas_init_image -> -EINVAL; the kernel only says
+#     "error -22 initializing firmware"). The two files even have the same
+#     size as linux-firmware's; only the signature differs, so "is the file
+#     present?" checks cannot detect this. Without them:
+#       a650_zap -> GPU hw init failed -110 -> gamescope finds no physical
+#                device -> sddm loops -> a black screen
+#       adsp     -> q6afe never comes up -> PipeWire has only Dummy Output
 #
-#     固件是小米签的，不可再分发，所以不在仓库里：
-#     scripts/extract-alioth-firmware.sh 从设备自己的 modem_a 和 super 里取。
+#     The firmware is Xiaomi-signed and not redistributable, so it is not in
+#     the repository: scripts/extract-alioth-firmware.sh pulls it from the
+#     device's own modem_a and super.
 if [[ -n "${ALIOTH_FW_DIR:-}" && -d "${ALIOTH_FW_DIR}" ]]; then
   "${PORT_ROOT}/scripts/assert-alioth-firmware.sh" "${ALIOTH_FW_DIR}" \
-    || die "ALIOTH_FW_DIR=${ALIOTH_FW_DIR} 没过 assert-alioth-firmware.sh"
-  echo "==> 盖上机内签名固件（${ALIOTH_FW_DIR}）"
+    || die "ALIOTH_FW_DIR=${ALIOTH_FW_DIR} failed assert-alioth-firmware.sh"
+  echo "==> overlaying device-signed firmware (${ALIOTH_FW_DIR})"
   sudo rsync -a "${ALIOTH_FW_DIR}/" "$R/usr/lib/firmware/"
-  # 让产物自己带着出处，而且是**正面**的那种：flash-alioth.sh --install 要求
-  # 看到 DEVICE-FIRMWARE 才肯写 userdata。为什么不是「没有 GENERIC 标记就放
-  # 行」—— 那样一个在这个检查存在之前构建的 kit、或者一个手工拷过来的 kit，
-  # 都会被当成好的。不可逆的那一步要的是有人签过字，不是没人反对。
+  # Leave positive provenance in the artifact: flash-alioth.sh --install
+  # requires DEVICE-FIRMWARE before it will write userdata. Why not "no
+  # GENERIC marker, so allow it"? That would accept a kit built before this
+  # check existed, or a hand-copied kit. An irreversible step wants someone
+  # to sign for it, not the absence of an objection.
   mkdir -p "$OUT"
   rm -f "$OUT/GENERIC-FIRMWARE"
   {
-    echo "机内签名固件，取自 ALIOTH_FW_DIR=${ALIOTH_FW_DIR}"
-    echo "构建时间 $(date -Is)"
+    echo "device-signed firmware from ALIOTH_FW_DIR=${ALIOTH_FW_DIR}"
+    echo "built $(date -Is)"
     (cd "${ALIOTH_FW_DIR}" && find . -type f -print0 | sort -z \
       | xargs -0 sha256sum) 2>/dev/null || true
   } >"$OUT/DEVICE-FIRMWARE"
 else
-  echo "!! 没有 ALIOTH_FW_DIR —— 镜像用的是 linux-firmware 的通用签名固件。"
-  echo "!! alioth 的 TrustZone 会拒收它们：开机是黑屏，而且没有声音。"
-  echo "!! 先跑 scripts/extract-alioth-firmware.sh（见它的头注释），再设"
-  echo "!! ALIOTH_FW_DIR=<产物目录> 重跑。"
-  # 让产物自己带着出处。警告会滚出屏幕，文件不会 —— flash-alioth.sh --install
-  # 读的是这个文件，不是操作者的记性。
+  echo "!! no ALIOTH_FW_DIR -- the image uses linux-firmware's generically"
+  echo "!! signed firmware. alioth's TrustZone rejects it: black screen and"
+  echo "!! no sound. Run scripts/extract-alioth-firmware.sh first (see its"
+  echo "!! header), then rerun with ALIOTH_FW_DIR=<output-dir>."
+  # Leave provenance in the artifact. Warnings scroll off the screen; files
+  # do not -- flash-alioth.sh --install reads this file, not the operator's
+  # memory.
   if [[ "$MODE" == --install ]]; then
     mkdir -p "$OUT"
     rm -f "$OUT/DEVICE-FIRMWARE"
     cat >"$OUT/GENERIC-FIRMWARE" <<'FWEOF'
-这个 kit 是在没有 ALIOTH_FW_DIR 的情况下构建的，a650_zap.mbn 与 adsp.mbn 是
-linux-firmware 的通用签名版。alioth 的 TrustZone 拒收它们：
+This kit was built without ALIOTH_FW_DIR. a650_zap.mbn and adsp.mbn are
+linux-firmware's generically signed versions. alioth's TrustZone rejects them:
 
-  a650_zap -> GPU hw init failed -110 -> gamescope 找不到物理设备
-           -> sddm 死循环 -> 一块**黑屏**
-  adsp     -> q6afe 不上线 -> PipeWire 只有 Dummy Output，一点声音没有
+  a650_zap -> GPU hw init failed -110 -> gamescope finds no physical device
+           -> sddm loops -> a black screen
+  adsp     -> q6afe never comes up -> PipeWire has only Dummy Output, no sound
 
-flash-alioth.sh --install 看到这个文件会拒绝执行。要刷它（明知黑屏无声），
-在刷的时候也设 ALIOTH_FW_GENERIC_OK=1。
+flash-alioth.sh --install refuses to run when it sees this file. To flash it
+anyway (knowing it is a black screen with no sound), also set
+ALIOTH_FW_GENERIC_OK=1 at flash time.
 FWEOF
   fi
 fi
 
-# 2b. InputPlumber。Valve 的 Frame 镜像里**没有**这个守护进程 —— 只有
-#     Steam 自己的 udev 规则（90-steam-inputplumber.rules）。而 spec §7.1
-#     的整个输入设计都压在它上面：蓝牙手柄和音量键经它变成一个虚拟 Deck
-#     手柄。上游移植靠 install-inputplumber-sm8550.sh 装一份官方预编译的
-#     aarch64 release，这里复用它，但跳过它自带的 SM8550 复合设备配置
-#     （我们自己的在 alioth-overlay 里，而那套 ext-hid 服务和 udev 规则
-#     在别的板子上不是惰性的）。
-#     放在 sm8250-overlay 之前：它的 tarball 会往 $R/etc 里铺文件。
-echo "==> 装入 InputPlumber（仅守护进程）"
+# 2b. InputPlumber. Valve's Frame image does not include this daemon -- only
+#     Steam's own udev rule (90-steam-inputplumber.rules). Spec §7.1's whole
+#     input design depends on it: Bluetooth controllers and volume keys become
+#     a virtual Deck pad through it. The upstream port installs an official
+#     prebuilt aarch64 release with install-inputplumber-sm8550.sh; reuse that,
+#     but skip its SM8550 composite-device profile (ours is in alioth-overlay,
+#     and its ext-hid services and udev rules are not inert on other boards).
+#     Do this before sm8250-overlay: its tarball lays files into $R/etc.
+echo "==> installing InputPlumber (daemon only)"
 sudo env INPUTPLUMBER_SKIP_DEVICE_COMPOSITE=1 \
   "${PORT_ROOT}/scripts/install-inputplumber-sm8550.sh" "$R"
 
-# 3. sm8250-overlay。和上游 apply-overlays.sh 的 SOC=sm8250 分支同一个循环、
-#    同样的权限位。其中掌机的那些 InputPlumber profile 对 alioth 是惰性的
-#    （各自 gate 在自己的 DT model 上），而 steamos-powerbuttond.service
-#    是我们要用的，见 alioth-overlay/README.md。
-echo "==> 装入 sm8250-overlay"
+# 3. sm8250-overlay. Same loop and permission bits as upstream
+#    apply-overlays.sh's SOC=sm8250 branch. The handheld InputPlumber profiles
+#    are inert on alioth (each is gated on its own DT model), while
+#    steamos-powerbuttond.service is what we need; see alioth-overlay/README.md.
+echo "==> installing sm8250-overlay"
 while IFS= read -r f; do
   sudo install -D -m0644 "$S8250_OVL/$f" "$R/$f"
 done < <(cd "$S8250_OVL" && find etc usr -type f)
 
-# 4. alioth-overlay。
-echo "==> 装入 alioth-overlay"
-sudo "${PORT_ROOT}/scripts/apply-alioth-overlay.sh" "$R"
+# 4. alioth-overlay.
+echo "==> installing alioth-overlay"
+sudo env ALIOTH_ORIENTATION_FLIP="$ORIENTATION_FLIP" \
+  "${PORT_ROOT}/scripts/apply-alioth-overlay.sh" "$R"
 
-# 4a2. 去 VR 化。Frame 是 VR 头显：gamescope-session.target 的 Description
-#      就是 "Gamescope VR Session"，gamescope 默认以 --backend openvr
-#      --vr-session-manager 启动，SteamVR 不在就立刻退 —— 表现是全程黑屏。
-#      上面那条「不调 apply-overlays.sh」的裁决当初连带把整层去 VR 化也漏
-#      掉了，这是 Task 8 真机实测补上的。放在两个 overlay 之后，是为了备份到
-#      /var/lib/steamos-arm-stock 的一定是 Frame 原件而不是 overlay 刚写进去
-#      的东西；upper 下的目录这一步自己会建。
-echo "==> 去 VR 化（会话脚本 + unit mask）"
+# 4a2. De-VR. The Frame is a VR headset: gamescope-session.target's
+#      Description is "Gamescope VR Session" and gamescope starts with
+#      --backend openvr --vr-session-manager by default, so it exits at once
+#      when SteamVR is absent -- the symptom is a black screen all the way.
+#      The earlier "do not call apply-overlays.sh" decision accidentally
+#      dropped this whole layer too; Task 8 measured it on the device and
+#      added it back. It runs after both overlays so the backup under
+#      /var/lib/steamos-arm-stock is always the Frame original, not something
+#      an overlay just wrote; this step creates the upper directories itself.
+echo "==> de-VR (session scripts + unit masks)"
 sudo "${PORT_ROOT}/scripts/apply-alioth-devr.sh" "$R"
 
-# 4b. /etc 的 overlayfs。etc.mount 是
-#     lowerdir=/etc,upperdir=/var/lib/overlays/etc/upper,workdir=.../work，
-#     而 overlayfs 要求 upperdir 和 workdir **都已存在** —— systemd 的
-#     mount unit 不会替你建。Valve 的 rootfs.img 里两个都没有，所以必须
-#     在这里建全。只建 upper 的话 etc.mount 会失败，/etc 退回下层，
-#     而我们镜像到 upper 的那些配置就全不生效。
+# 4a3. alioth has no DP alt mode and no VR headset; the de-VR layer masks
+#      every SteamVR unit, and no normal boot path calls /opt/steamvr. Keeping
+#      it is 1.37 GiB of dead weight, so drop it from the image. Keep
+#      /usr/bin/steamvr and /usr/share/deckard/openvrpaths.vrpath -- the
+#      former prints "no installation found" if a repair path names it, and
+#      the latter is only copied by masked units.
+echo "==> removing unused /opt/steamvr"
+sudo rm -rf "$R/opt/steamvr"
+
+# 4b. /etc overlayfs. etc.mount is
+#     lowerdir=/etc,upperdir=/var/lib/overlays/etc/upper,workdir=.../work,
+#     and overlayfs requires upperdir and workdir to exist -- systemd's mount
+#     unit does not create them. Valve's rootfs.img has neither, so create
+#     both here. Creating only upperdir makes etc.mount fail, /etc falls back
+#     to the lower layer, and every configuration mirrored into upper is
+#     ineffective.
 sudo mkdir -p "$R/var/lib/overlays/etc/upper" "$R/var/lib/overlays/etc/work"
 
-# 4c. 启用 inputplumber.service。预编译 release 里带 unit，但不带 enable
-#     链接，而没有它 InputPlumber 根本不启动 —— 症状是「手柄在 Steam 里
-#     还是 Xbox 图标」。
+# 4c. Enable inputplumber.service. The prebuilt release ships the unit but not
+#     the enable link, and without it InputPlumber never starts -- the symptom
+#     is "the controller still shows Xbox icons in Steam".
 for u in inputplumber.service; do
   if [[ -f "$R/usr/lib/systemd/system/$u" ]]; then
     sudo mkdir -p "$R/usr/lib/systemd/system/multi-user.target.wants"
     sudo ln -sfn "../$u" "$R/usr/lib/systemd/system/multi-user.target.wants/$u"
-    echo "==> 已启用 $u"
+    echo "==> enabled $u"
   else
-    echo "!! 没有 $u —— InputPlumber 没装上？"
+    echo "!! missing $u -- did InputPlumber fail to install?"
   fi
 done
 
-# 4d. Steam 客户端种子（spec §6.4）。可选，因为它需要一棵现成的完整
-#     ARM 客户端树（STEAM_ARM_SEED）或 vendor 的 install-steam-arm，两者
-#     都不在这台构建机上。
+# 4d. Steam client seed (spec §6.4). Optional, because it needs a complete
+#     ARM client tree (STEAM_ARM_SEED) or vendor install-steam-arm, neither of
+#     which is on this build host.
 #
-#     镜像自带 /usr/lib/steam/steam.tar.zst 作为 bootstrap，首次开机联网
-#     自举。上游 install-complete-steam-client.sh 的注释说 Frame 的这个
-#     tarball「version 0、缺 package zip、转圈」—— 那是他们在自己环境里的
-#     结论，alioth 上是不是这样要 Task 8 实测。这里不假装解决了。
+#     The image ships /usr/lib/steam/steam.tar.zst as a bootstrap and
+#     self-bootstraps on first online boot. Upstream
+#     install-complete-steam-client.sh says the Frame's tarball is "version 0,
+#     missing package zip, spinning" -- that is their environment; whether it
+#     is true on alioth needs a Task 8 measurement. Do not pretend it is
+#     solved here.
 STEAM_HOME="$R/home/steamos/.local/share/Steam"
 if [[ -n "${STEAM_ARM_SEED:-}" && -d "${STEAM_ARM_SEED}" ]]; then
-  echo "==> 预置 Steam ARM 客户端（种子 ${STEAM_ARM_SEED}）"
+  echo "==> seeding Steam ARM client (from ${STEAM_ARM_SEED})"
   sudo mkdir -p "$STEAM_HOME"
   sudo env STEAM_ARM_SEED="${STEAM_ARM_SEED}" \
     "${PORT_ROOT}/scripts/install-complete-steam-client.sh" "$STEAM_HOME"
   sudo chown -R 1000:1000 "$R/home/steamos"
 else
-  echo "!! 没有 STEAM_ARM_SEED —— 镜像里不预置 Steam 客户端。"
-  echo "!! 首次开机会用 /usr/lib/steam/steam.tar.zst 联网自举（约 2.5 GB）。"
-  echo "!! spec §6.4 要求预置；要预置就设 STEAM_ARM_SEED=<一棵完整的 Steam 树> 重跑。"
+  echo "!! no STEAM_ARM_SEED -- the image does not pre-seed the Steam client."
+  echo "!! First boot will bootstrap from /usr/lib/steam/steam.tar.zst over the"
+  echo "!! network (about 2.5 GB). spec §6.4 asks for a seed; to provide one,"
+  echo "!! set STEAM_ARM_SEED=<a complete Steam tree> and rerun."
 fi
 
-# 4e. 开发者 ssh 入口（可选，默认关闭）。
+# 4e. Developer SSH entry (optional, off by default).
 #
-#     为什么默认关闭：这一步产出的是一台会连家里 WiFi 的设备的根文件系统。
-#     镜像里躺着一把公钥、ssh 守护进程又是开机自启，那就是个后门 —— 而且
-#     是「我按照 README 刷了机」的人完全看不见的后门。所以它由环境变量
-#     ALIOTH_SSH_PUBKEY 显式打开，不设就一个字节都不写。
-#     scripts/assert-alioth-kit.sh 的 A.1b 条静态断言这件事。
+#     Why off by default: this step produces the root filesystem of a device
+#     that will join the home WiFi. A public key in the image plus an sshd
+#     that starts at boot is a backdoor -- and one that someone who "just
+#     followed the README" cannot see. So it is explicitly enabled by
+#     ALIOTH_SSH_PUBKEY; without it, not a byte is written.
+#     scripts/assert-alioth-kit.sh A.1b checks this statically.
 #
-#     设了之后能干什么：scripts/alioth-ssh.sh 走 USB NCM（设备 10.86.200.233）
-#     直接进系统。Game Mode 下没有终端，而真机上大部分修复（/usr 和 /etc
-#     都可写）靠 ssh 就能落地，不必重新刷机 —— 阶段 2 的黑屏、触摸、电源键、
-#     音频全是这么诊断出来的。
+#     What it enables: scripts/alioth-ssh.sh reaches the system over USB NCM
+#     (device 10.86.200.233). Game Mode has no terminal, and most on-device
+#     fixes (/usr and /etc are writable) can be done over ssh without
+#     reflashing -- phase 2's black screen, touch, power key and audio were
+#     all diagnosed this way.
 #
-#     用法: ALIOTH_SSH_PUBKEY=~/.ssh/id_ed25519.pub ./make-steamos-alioth.sh --install
+#     Usage: ALIOTH_SSH_PUBKEY=~/.ssh/id_ed25519.pub ./make-steamos-alioth.sh --install
 if [[ -n "${ALIOTH_SSH_PUBKEY:-}" ]]; then
   pub="${ALIOTH_SSH_PUBKEY}"
-  [[ -f "$pub" ]] || die "ALIOTH_SSH_PUBKEY=$pub 不是一个文件"
+  [[ -f "$pub" ]] || die "ALIOTH_SSH_PUBKEY=$pub is not a file"
   grep -qE '^(ssh|ecdsa)-' "$pub" \
-    || die "ALIOTH_SSH_PUBKEY=$pub 看着不像公钥（第一行不以 ssh-/ecdsa- 开头）；
-     别把私钥装进镜像。"
-  echo "==> 装开发者 ssh 入口（公钥 $pub）"
+    || die "ALIOTH_SSH_PUBKEY=$pub does not look like a public key (first line
+     does not start with ssh- or ecdsa-); do not put a private key in the image."
+  echo "==> installing developer SSH entry (public key $pub)"
 
-  # 公钥进 steamos 用户的 home。/home 在 alioth 上就在根文件系统里
-  #（Frame 的 home.mount 指向一个本机没有的分区，已在去 VR 化那一步 mask 掉）。
+  # Public key goes into the steamos user's home. /home is on the root
+  # filesystem on alioth (the Frame's home.mount points at a partition this
+  # device does not have and was masked by the de-VR step).
   sudo install -d -m0700 -o 1000 -g 1000 "$R/home/steamos/.ssh"
   sudo install -m0600 -o 1000 -g 1000 "$pub" "$R/home/steamos/.ssh/authorized_keys"
 
-  # enable 守护进程。镜像自带的 unit 声明 WantedBy=multi-user.target，
-  # 但预编译镜像里没有那条 enable 链接，而构建机上不能对别人的 rootfs 跑
-  # systemctl enable（会写到本机的 /etc），所以手工建链接。
-  # 两份：镜像里的 /etc 是 overlayfs 的 lowerdir，开机时真正生效的是
-  # upperdir —— 只写 lowerdir 的话，开机后这条链接根本不存在。
+  # Enable the daemon. The image's unit says WantedBy=multi-user.target, but
+  # the prebuilt image has no enable link, and you cannot run
+  # `systemctl enable` against someone else's rootfs on the build host (it
+  # would write to this host's /etc), so create the link by hand.
+  # Two copies: the image's /etc is the overlayfs lowerdir; what actually
+  # takes effect at boot is the upperdir -- writing only the lowerdir means
+  # the link does not exist after boot.
   for d in "$R/etc/systemd/system" "$R/var/lib/overlays/etc/upper/systemd/system"; do
     sudo mkdir -p "$d/multi-user.target.wants"
     sudo ln -sfn /usr/lib/systemd/system/sshd.service \
       "$d/multi-user.target.wants/sshd.service"
   done
-  # 主机密钥由 sshdgenkeys.service 在首次开机生成（sshd.service 自己
-  # Wants= 它），这里不预生成 —— 每台机器的主机密钥必须是自己的。
+  # Host keys are generated by sshdgenkeys.service on first boot (sshd.service
+  # Wants= it). Do not pre-generate them here -- every device must have its
+  # own.
 
-  # 自刷授权。alioth-write-boot 要 root（它写 boot_a/boot_b），而正式系统里
-  # steamos 没有免密 sudo —— 真机实测 `sudo -n true` 要密码，而 Game Mode
-  # 下没有地方输。放开的只有这一个命令，而且只在这个 opt-in 块里放开：
-  # 不设 ALIOTH_SSH_PUBKEY 的镜像一条 sudoers 规则都不多。
+  # Self-flash authorization. alioth-write-boot needs root (it writes
+  # boot_a/boot_b), and steamos has no passwordless sudo in the installed
+  # system -- measured on the device, `sudo -n true` asks for a password, and
+  # Game Mode has nowhere to type it. Only this one command is allowed, and
+  # only inside this opt-in block: an image built without ALIOTH_SSH_PUBKEY
+  # gets no sudoers rule at all.
   #
-  # 为什么值得放开：改内核是这个项目里重复次数最多的循环，而每一轮本来都要
-  # 人按住音量下 + 电源进 fastboot。有了它一轮是「送文件 + 普通重启」。
-  # 能放开这一个命令是因为那个脚本自己把边界守住了 —— 只认 PARTLABEL 是
-  # boot_a/boot_b 的块设备，别的分区（super、userdata，尤其是 abl）它一个
-  # 字节都不写，而且写完会读回来比 sha256。
+  # Why it is worth allowing: changing the kernel is the most repeated loop in
+  # this project, and every round used to require holding volume-down + power
+  # to enter fastboot. With this, a round is "send the file + a normal reboot".
+  # The command can be allowed because the script guards its own boundary --
+  # it only accepts block devices whose PARTLABEL is boot_a/boot_b and never
+  # writes a byte to any other partition (super, userdata, especially abl),
+  # and after writing it reads back and compares sha256.
   #
-  # 名字必须以 zz- 开头。@includedir 按文件名排序读，而 sudoers 里**后面
-  # 的规则覆盖前面的** —— 镜像自带 /etc/sudoers.d/wheel 写着
+  # The name must start with zz-. @includedir reads files in filename order,
+  # and in sudoers the later rule wins -- the image's /etc/sudoers.d/wheel
+  # says
   #   %wheel ALL=(ALL) ALL
-  # 而 steamos 在 wheel 组里（真机实测 groups=…,998(wheel),…）。叫
-  # 50-alioth-write-boot 的话它排在 wheel 前面，于是 wheel 那条带密码的规则
-  # 最后生效，`sudo -n` 照样要密码（实测如此）。zz- 排在 wheel 后面。
+  # and steamos is in the wheel group (measured groups=...,998(wheel),...).
+  # A file named 50-alioth-write-boot would sort before wheel, so wheel's
+  # password-requiring rule would win and `sudo -n` would still ask for a
+  # password (measured). zz- sorts after wheel.
   #
-  # 第二条是 alioth-install-modules：boot 镜像里只有内核和设备树，模块在
-  # userdata 上，而这个移植里一半的东西是 `=m`。只换 boot 的后果是「改动
-  # 在构建机的模块里，设备上加载的还是旧那份，版本字符串一样所以什么都不
-  # 报错」—— 2026-10-24 就这么丢掉了一轮。它的边界也在它自己里：归档每个
-  # 成员的路径、类型、链接目标都先验过，只往 /usr/lib/modules/<版本> 写。
+  # The second command is alioth-install-modules: the boot image has only the
+  # kernel and device tree, while modules live on userdata and half of this
+  # port is `=m`. Replacing only boot leaves the device loading the old module
+  # files under an identical version string, so nothing reports an error --
+  # that cost a round on 2026-10-24. Its boundary is also inside itself: it
+  # verifies every archive member's path, type and link target before writing
+  # only under /usr/lib/modules/<version>.
   #
-  # 第三条命令是 `systemctl reboot`。写完 boot 槽要重启才生效，而 steamos
-  # 自己重启不了 —— 真机实测 `systemctl reboot` 回
+  # The third command is `systemctl reboot`. Writing the boot slot takes effect
+  # only after a reboot, and steamos cannot reboot itself -- measured:
+  # `systemctl reboot` returns
   #   Call to Reboot failed: Interactive authentication required.
-  # （没有本地 seat 的 ssh 会话，polkit 不给过）。少了它，「不用碰手机」这件事
-  # 就在最后一步断掉。放开它不扩大什么：能登进来的人本来就能让机器重启。
+  # (an ssh session with no local seat, so polkit denies it). Without it the
+  # "do not touch the phone" loop breaks at the last step. Allowing it does not
+  # widen anything: anyone who can log in can already make the device reboot.
   sudo install -d -m0750 "$R/etc/sudoers.d"
   printf '%s\n' \
     'steamos ALL=(root) NOPASSWD: /usr/lib/steamos-arm/alioth-write-boot' \
     'steamos ALL=(root) NOPASSWD: /usr/lib/steamos-arm/alioth-install-modules' \
     'steamos ALL=(root) NOPASSWD: /usr/bin/systemctl reboot' \
     | sudo install -m0440 /dev/stdin "$R/etc/sudoers.d/zz-alioth-write-boot"
-  # 同样要进 overlay 的 upperdir，否则开机后这条规则不存在（见上面那段注释）。
+  # It also has to go into the overlay upperdir, otherwise the rule does not
+  # exist after boot (see the comment above).
   sudo install -d -m0750 "$R/var/lib/overlays/etc/upper/sudoers.d"
   sudo install -m0440 "$R/etc/sudoers.d/zz-alioth-write-boot" \
     "$R/var/lib/overlays/etc/upper/sudoers.d/zz-alioth-write-boot"
-  echo "!! 这个镜像开机就允许 ssh steamos@ 登录。只给自己的设备用。"
+  echo "!! this image allows ssh steamos@ login at boot. Use it only on your own device."
 else
-  echo "!! 没有 ALIOTH_SSH_PUBKEY —— 镜像里不装 ssh 公钥、不开 ssh 守护进程。"
-  echo "!! 要开发者入口就设 ALIOTH_SSH_PUBKEY=<你的 .pub> 重跑；见 scripts/alioth-ssh.sh。"
+  echo "!! no ALIOTH_SSH_PUBKEY -- the image gets no ssh key and no sshd."
+  echo "!! For a developer entry point set ALIOTH_SSH_PUBKEY=<your .pub> and rerun; see scripts/alioth-ssh.sh."
 fi
 
-# 5. 首次开机哨兵。alioth-firstboot 见不到它就什么都不做，根文件系统会
-#    永远停在几 GB —— 而 Steam 第一次装游戏才会报错。
+# 5. First-boot sentinel. alioth-firstboot does nothing without it, and the
+#    root filesystem stays at a few GB -- Steam only reports an error when it
+#    first tries to install a game.
 sudo mkdir -p "$R/var/lib"
 sudo touch "$R/var/lib/alioth-firstboot-pending"
 
-# 6. 每台机器要有自己的 D-Bus / 网络身份。
+# 6. Every machine needs its own D-Bus / network identity.
 sudo truncate -s 0 "$R/etc/machine-id"
 [[ -f "$R/var/lib/overlays/etc/upper/machine-id" ]] \
   && sudo truncate -s 0 "$R/var/lib/overlays/etc/upper/machine-id"
 
-# 7. 造 ext4。镜像只装得下内容 + 一点余量；首次开机长到整个分区。
+# 7. Create the ext4 image. The image holds only the content plus a little
+#    headroom; first boot grows it to the whole partition.
 root_uuid="$(uuidgen)"
 used_mib="$(sudo du -sm --exclude=proc --exclude=sys --exclude=dev \
   --exclude=tmp --exclude=run "$R" | awk '{print $1}')"
 root_mib=$((used_mib + 1024 + used_mib / 50 + 128))
 raw="${STEAMOS_WORK:-${PORT_ROOT}/work}/.userdata-alioth.img"
-echo "==> userdata: ${root_mib} MiB ext4 UUID=${root_uuid}（内容 ${used_mib} MiB，首次开机长到 106 GiB）"
+echo "==> userdata: ${root_mib} MiB ext4 UUID=${root_uuid} (content ${used_mib} MiB; first boot grows to 106 GiB)"
 
 rm -f "$raw"
 truncate -s "${root_mib}M" "$raw"
@@ -529,23 +619,24 @@ cleanup_img() {
 trap cleanup_img EXIT
 sudo mkdir -p "$MNT"
 LOOPDEV="$(sudo losetup -f --show "$raw")"
-[[ -n "$LOOPDEV" ]] || die "losetup 失败"
+[[ -n "$LOOPDEV" ]] || die "losetup failed"
 sudo mount "$LOOPDEV" "$MNT"
 
-echo "==> 复制根文件系统进镜像"
+echo "==> copying root filesystem into the image"
 sudo rsync -aHAX --numeric-ids \
   --exclude='/dev/**' --exclude='/proc/**' --exclude='/sys/**' \
   --exclude='/tmp/**' --exclude='/run/**' \
   "${R}/" "${MNT}/"
 sudo mkdir -p "$MNT/dev" "$MNT/proc" "$MNT/sys" "$MNT/tmp" "$MNT/run"
 
-# fstab 用 UUID，不写死 /dev/sd*：UFS 的枚举顺序不保证。
-# x-systemd.growfs 让 systemd 在挂载时就扩展；alioth-firstboot 里的
-# resize2fs 是它的兜底（已经长满时那是个退出 0 的空操作），真正只属于
-# alioth-firstboot 的是扩展成功之后的 successful 标记。
+# fstab uses a UUID rather than a hardcoded /dev/sd*: UFS enumeration order is
+# not guaranteed. x-systemd.growfs grows the filesystem at mount time;
+# alioth-firstboot's resize2fs is the fallback (a no-op exit 0 if already
+# grown), and what only alioth-firstboot does is mark the slot successful
+# after the growth succeeds.
 printf '%s\n' \
-  "# SteamOS ARM (sm8250, Xiaomi alioth)：userdata 上一个 ext4 就是 /，" \
-  "# /home 也在里面。没有 boot 分区 —— 内核在 boot_a/boot_b。" \
+  "# SteamOS ARM (sm8250, Xiaomi alioth): one ext4 on userdata is /," \
+  "# and /home is inside it. No boot partition -- the kernel is in boot_a/boot_b." \
   "UUID=${root_uuid}  /  ext4  defaults,noatime,commit=30,x-systemd.growfs  0 1" \
   | sudo tee "$MNT/etc/fstab" >/dev/null
 sudo mkdir -p "$MNT/var/lib/overlays/etc/upper"
@@ -556,7 +647,7 @@ printf '%s\n' \
   "soc=sm8250" "device=Xiaomi Redmi K40 / POCO F3 (alioth)" \
   "kernel=${KREL}" "built=$(date -Iseconds)" \
   "root_uuid=${root_uuid}" "root=PARTLABEL=userdata" \
-  "layout=ext4 userdata (root + home)，内核在 boot_a/boot_b" \
+  "layout=ext4 userdata (root + home), kernel in boot_a/boot_b" \
   | sudo tee "$MNT/opt/steamos-alioth/IMAGE.txt" >/dev/null
 
 sync
@@ -565,18 +656,25 @@ trap - EXIT
 sudo e2fsck -fy "$raw" >/dev/null || true
 sudo chown "$(id -u):$(id -g)" "$raw"
 
-# 8. boot.img。和 boot-debug.img 同一个 cmdline：阶段 1 那条 cmdline 里
-#    steamos.root=PARTLABEL=userdata 本来就指向这里，当时挂不上只是因为
-#    那个分区还装着 Android 的加密 f2fs。usbshell 留着 —— 首次开机真出问题
-#    时，它是唯一的观测通道（阶段 1 的教训）。
+# 8. boot.img. Same cmdline as boot-debug.img: steamos.root=PARTLABEL=userdata
+#    already pointed here in the phase-1 cmdline; it failed to mount only
+#    because the partition still held Android's encrypted f2fs. Keep usbshell
+#    -- if first boot really goes wrong, it is the only observation channel
+#    (the phase-1 lesson).
 pack_boot boot.img
+# Same kernel, one extra token. flash-alioth.sh --install flashes this image
+# only when the operator agrees to move static system files to the Android
+# system partition; on first boot alioth-super-migrate.service reads the token
+# from /proc/cmdline.
+pack_boot boot-migrate.img alioth.supermigrate=1
 
 if command -v img2simg >/dev/null; then
-  echo "==> sparse（img2simg）"
+  echo "==> sparse (img2simg)"
   img2simg "$raw" "${KIT}/userdata.img"
   rm -f "$raw"
 else
-  echo "==> 没有 img2simg，输出 raw userdata.img（fastboot 自己会转 sparse）"
+  echo "==> no img2simg; writing raw userdata.img. Install android-sdk-libsparse-utils"
+  echo "    (or android-tools-fsutils) and rebuild if fastboot rejects the raw file."
   mv "$raw" "${KIT}/userdata.img"
 fi
 
@@ -584,4 +682,4 @@ sums
 echo
 ls -lh "${KIT}"
 echo
-echo "刷机: ./flash-alioth.sh --install   （会擦掉 Android 的 /data）"
+echo "flash: ./flash-alioth.sh --install   (will erase Android's /data)"

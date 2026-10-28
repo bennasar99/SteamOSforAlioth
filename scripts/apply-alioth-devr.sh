@@ -63,7 +63,7 @@ files=(
   usr/lib/systemd/user/steam.service.d/60-gamescope-env.conf
   # Stock zram is ram/2 with lzo-rle. On a 6 GB phone that is 2.7 GB and the
   # Steam UI plus a Proton game can exhaust it. The shared SteamOS-ARM zram
-  # drop-in sizes it to RAM (capped at 8 GB) and uses zstd.
+  # drop-in uses a fixed 3.5 GiB and lzo-rle.
   usr/lib/systemd/zram-generator.conf.d/60-steamos-arm-zram.conf
 )
 for f in "${files[@]}"; do
@@ -92,10 +92,20 @@ done
 mask_user=(
   steamvr.service steamvr-logs.service steamvr-proxmicmute.service
   steamvr-v4l2cam.service steamvr-nested-desktop.service
+  steamvr-plasma.service
 )
 mask_sys=(
   steamvr-program-ble.service steamvr-v4l2loopback.service
   steamvr-set-kernel-thread-priorities.service
+  steamvr-web-debug-portforward.service dsp_service.service
+  # Frame/SM8550 leftovers with no alioth consumer:
+  #   gpu-trace: Frame GPU capture daemon; nothing in the alioth port calls it.
+  #   iris-driver-rebind: SM8550 Iris video codec; alioth is SM8250/Venus and
+  #     the qcom-iris condition path does not exist.
+  #   steamos-log-submitter: Valve log uploader. steamos-manager only Wants it
+  #     (weak dependency), and the udev/devcoredump hooks invoke the Python
+  #     module directly, so masking the daemon keeps those hooks working.
+  gpu-trace.service iris-driver-rebind.service steamos-log-submitter.service
   deckard-audio-setup.service deckard-fan-control.service
   deckard-fpga.service deckard-led-control.service
   deckard-typec-logger.service deckard-charger.service

@@ -1,0 +1,12 @@
+[Unit]
+Description=Recover alioth Wi-Fi after steamos-manager on warm reboot
+After=steamos-manager.service NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'systemctl is-active --quiet NetworkManager || systemctl start NetworkManager; systemctl is-active --quiet iwd || systemctl start iwd'
+
+[Install]
+WantedBy=multi-user.target

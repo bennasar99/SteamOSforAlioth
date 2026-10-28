@@ -1,12 +1,26 @@
 #!/bin/sh
 # Create the 2 GiB alioth swap file once, then leave it alone.
 #
-# The file lives on / (userdata, ext4) and is used after the 4 GiB zram:
-# swapfile priority 50, zram priority 100. Running mkswap on every boot is
-# avoided by checking the existing swap signature first.
+# Normally the file is /swapfile on the root filesystem, after the 3.5 GiB
+# zram (swapfile priority 50, zram priority 100). After the opt-in migration
+# /swapfile is a symlink to /var/lib/steamos-extra/swapfile, which lives on
+# the Android system partition. If that symlink exists but its filesystem is
+# not mounted, fail closed: creating a regular file there would silently put
+# the swap back on the root filesystem and hide a mount failure.
 set -eu
-FILE=/swapfile
+BASE=/swapfile
+EXTRA=/var/lib/steamos-extra
 SIZE_MB=2048
+
+if [ -L "$BASE" ]; then
+    if ! mountpoint -q "$EXTRA"; then
+        echo "alioth-swapfile-setup: $BASE points into $EXTRA but it is not mounted; refusing to create a swap file on the root filesystem" >&2
+        exit 1
+    fi
+    FILE="$EXTRA/swapfile"
+else
+    FILE="$BASE"
+fi
 
 if [ ! -e "$FILE" ]; then
     fallocate -l "${SIZE_MB}M" "$FILE" 2>/dev/null \

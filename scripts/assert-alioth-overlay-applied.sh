@@ -42,7 +42,7 @@ out="$("$APPLY" "$R" 2>&1)"; rc=$?
 missing=()
 while IFS= read -r f; do
   [[ -f "$R/$f" ]] || missing+=("$f")
-done < <(cd "$OVL" && find etc usr -type f | sort)
+done < <(cd "$OVL" && find etc usr -type f | LC_ALL=C sort)
 [[ ${#missing[@]} -eq 0 ]] \
   && pass "alioth 文件已装" "etc/ 与 usr/ 下的文件都在" \
   || fail "alioth 文件已装" "缺少: ${missing[*]}"
@@ -55,7 +55,7 @@ done < <(cd "$OVL" && find etc usr -type f | sort)
 upper_missing=()
 while IFS= read -r f; do
   [[ -f "$R/var/lib/overlays/etc/upper/${f#etc/}" ]] || upper_missing+=("${f#etc/}")
-done < <(cd "$OVL" && find etc -type f | sort)
+done < <(cd "$OVL" && find etc -type f | LC_ALL=C sort)
 [[ ${#upper_missing[@]} -eq 0 ]] \
   && pass "/etc overlay upper" "etc/ 下的文件在 upper 里都有一份" \
   || fail "/etc overlay upper" "upper 里缺少: ${upper_missing[*]} —— 开机不生效"
@@ -66,7 +66,7 @@ done < <(cd "$OVL" && find etc -type f | sort)
 badmode=()
 while IFS= read -r f; do
   [[ -x "$R/$f" ]] || badmode+=("$f")
-done < <(cd "$OVL" && find etc usr -type f -perm -u+x | sort)
+done < <(cd "$OVL" && find etc usr -type f -perm -u+x | LC_ALL=C sort)
 [[ ${#badmode[@]} -eq 0 ]] \
   && pass "可执行位保住了" "overlay 里可执行的文件装进去仍然可执行" \
   || fail "可执行位保住了" "装成了不可执行: ${badmode[*]}"
@@ -76,7 +76,7 @@ done < <(cd "$OVL" && find etc usr -type f -perm -u+x | sort)
 badlink=()
 while IFS= read -r f; do
   [[ -L "$R/$f" ]] || badlink+=("$f")
-done < <(cd "$OVL" && find etc usr -type l | sort)
+done < <(cd "$OVL" && find etc usr -type l | LC_ALL=C sort)
 [[ ${#badlink[@]} -eq 0 ]] \
   && pass "符号链接仍是链接" "overlay 里的符号链接装进去仍是符号链接" \
   || fail "符号链接仍是链接" "变成了普通文件: ${badlink[*]}"
@@ -134,13 +134,30 @@ fi
   || fail "不误伤无关文件" "usr/bin/somebinary 被删了"
 
 # 6. 幂等。构建流程会重跑它，第二次不得报错或改变结果。
-before="$(cd "$R" && find . -type f | sort | md5sum)"
+before="$(cd "$R" && find . -type f | LC_ALL=C sort | md5sum)"
 out2="$("$APPLY" "$R" 2>&1)"; rc2=$?
-after="$(cd "$R" && find . -type f | sort | md5sum)"
+after="$(cd "$R" && find . -type f | LC_ALL=C sort | md5sum)"
 if [[ $rc2 -eq 0 && "$before" == "$after" ]]; then
   pass "幂等" "第二次运行退出 0，文件清单不变"
 else
   fail "幂等" "第二次运行退出 $rc2，文件清单变了: ${out2:0:200}"
+fi
+
+# 7. Optional Razer Kishi orientation pair. With ALIOTH_ORIENTATION_FLIP=0 both
+#    halves must be absent and the base 70-alioth.rules must remain. This is
+#    the same switch make-steamos-alioth.sh --install asks about.
+rm -f "$R/etc/systemd/user/gamescope-session.service.d/99-orientation.conf" \
+      "$R/var/lib/overlays/etc/upper/systemd/user/gamescope-session.service.d/99-orientation.conf" \
+      "$R/usr/lib/udev/rules.d/71-alioth-flip.rules"
+out3="$(ALIOTH_ORIENTATION_FLIP=0 "$APPLY" "$R" 2>&1)"; rc3=$?
+if [[ $rc3 -eq 0 \
+      && ! -e "$R/etc/systemd/user/gamescope-session.service.d/99-orientation.conf" \
+      && ! -e "$R/var/lib/overlays/etc/upper/systemd/user/gamescope-session.service.d/99-orientation.conf" \
+      && ! -e "$R/usr/lib/udev/rules.d/71-alioth-flip.rules" \
+      && -e "$R/usr/lib/udev/rules.d/70-alioth.rules" ]]; then
+  pass "Kishi 翻转可选" "ALIOTH_ORIENTATION_FLIP=0 时成对跳过，基础触摸矩阵保留"
+else
+  fail "Kishi 翻转可选" "退出 $rc3，翻转文件仍在或基础矩阵丢了: $(echo "$out3" | tail -1)"
 fi
 
 echo

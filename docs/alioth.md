@@ -1577,8 +1577,12 @@ probe 的时候 rootfs 还没挂上。
   用尽时 bootloader 落到 slot b 的原厂 Android，而 Android 看到陌生的 ext4 很可能
   格式化它，连 rootfs 一起没掉。标记 successful 正是 A/B 机制的设计用途。
 
-仍然禁止：**`super`**（8.5 GiB，刻意保留 —— 留着不花钱，且意味着以后格一下
-userdata 就能复活 Android）与 **`abl_a`/`abl_b`**（bootloader，砖了只能走 EDL）。
+**`super`（8.5 GiB）默认仍不写** —— 留着不花钱，且意味着以后格一下 userdata
+就能复活 Android。安装时可以选择 extra-storage 迁移：`flash-alioth.sh --install`
+刷 `boot-migrate.img`，首次开机由 `alioth-super-migrate.service` 格式化 super，
+把运行期只读的 SteamOS 数据（FEX guest root、Steam client、字体、图标、locale、
+文档、工具链）和 2 GiB swap 放过去。选了这条路之后 Android 只能靠完整 stock ROM
+恢复。**`abl_a`/`abl_b`** 仍然绝对禁止（bootloader，砖了只能走 EDL）。
 退路从「自动回退到 Android」改为**手动进 fastboot**（音量下 + 电源）—— 那条路在
 ABL 里，与槽内容无关，本阶段已反复走通。
 

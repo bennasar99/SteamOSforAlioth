@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+# One-time, opt-in migration of runtime-static SteamOS data onto the Android
+# "super" partition, plus the 2 GiB disk swap file.
+#
+# enabled by:  alioth.supermigrate=1 on the kernel cmdline (the install script
+#              flashes boot-migrate.img only when the operator says yes)
+# once only:   /var/lib/alioth-super-migrated on the root filesystem
+#
+# The set below is deliberately limited to data that is read-only during
+# normal use and is not needed by the initramfs or by systemd before
+# basic.target. Boot-critical paths (/usr/bin, core /usr/lib, systemd, udev,
+# modules, firmware, /etc, /var, /home) never appear here. Desktop files that
+# can grow when packages are installed are included, but the migration leaves
+# ~2 GiB free on the new filesystem for that growth.
+set -euo pipefail
+
+TOKEN=alioth.supermigrate=1
+DONE=/var/lib/alioth-super-migrated
+EXTRA=/var/lib/steamos-extra
+DEV=/dev/disk/by-partlabel/super
+LABEL=steamos-extra
+SWAP_BASE=/swapfile
+STATE_NAME=.alioth-migrate-state
+TMP_MNT=/run/alioth-super-tmp
+ROOT_VIEW=/run/alioth-root
+
+MOVES=(
+  usr/share/guestos
+  usr/lib/steam
+  usr/share/doc
+  usr/share/man
+  usr/share/gtk-doc
+  usr/share/cmake
+  usr/include
+  usr/src
+  usr/lib/gcc
+  usr/lib/clang
+  usr/share/locale
+  usr/share/fonts
+  usr/share/icons
+  usr/share/wallpapers
+  usr/share/ibus
+  usr/share/anthy
+  usr/share/liblouis
+  usr/share/speech-dispatcher
+  usr/share/i18n
+  usr/share/swcatalog
+  usr/share/gir-1.0
+  usr/share/qt6
+  usr/share/plasma
+  usr/share/vim
+  usr/share/renderdoc
+)
+
+log() { echo "alioth-super-migrate: $*"; }
+die() { echo "alioth-super-migrate: $*" >&2; exit 1; }
+
+grep -qw "$TOKEN" /proc/cmdline || { log "migration was not requested"; exit 0; }
+[[ -e "$DONE" ]] && { log "already migrated"; exit 0; }
+[[ -b "$DEV" ]] || die "missing $DEV"
+
+state_name() { printf '%s' "$1" | tr '/' '_'; }
+marker_for() { printf '%s/%s.done' "$STATE" "$(state_name "$1")"; }
+
+# Reuse an existing ext4 filesystem with our label; otherwise create one.
+# Never format a device that is mounted somewhere else.
+if ! mountpoint -q "$EXTRA"; then
+  if findmnt -S "$DEV" >/dev/null 2>&1; then
+    die "$DEV is already mounted somewhere else; refusing to format it"
+  fi
+fi
+fstype="$(blkid -p -s TYPE -o value "$DEV" 2>/dev/null || true)"
+fslabel="$(blkid -p -s LABEL -o value "$DEV" 2>/dev/null || true)"
+if [[ "$fstype" == ext4 && "$fslabel" == "$LABEL" ]]; then
+  log "reusing existing ext4 filesystem ($LABEL)"
+else
+  log "formatting $DEV as ext4 ($LABEL)"
+  mkfs.ext4 -q -m 0 -L "$LABEL" "$DEV"
+fi
+
+MNT=""
+TMP_ACTIVE=0
+if mountpoint -q "$EXTRA"; then
+  MNT="$EXTRA"
+else
+  mkdir -p "$TMP_MNT"
+  mount -o noatime "$DEV" "$TMP_MNT"
+  MNT="$TMP_MNT"
+  TMP_ACTIVE=1
+fi
+
+STATE="$MNT/$STATE_NAME"
+mkdir -p "$MNT/root" "$STATE"
+
+# Reserve the swap file first. Creating it after the copy could fail if the
+# copy fills the filesystem.
+SWAP="$MNT/swapfile"
+if [[ ! -f "$SWAP" ]] || [[ "$(stat -c %s "$SWAP" 2>/dev/null || echo 0)" -ne $((2048 * 1024 * 1024)) ]]; then
+  log "creating 2048 MiB swap file"
+  rm -f "$SWAP"
+  fallocate -l 2048M "$SWAP" 2>/dev/null \
+    || dd if=/dev/zero of="$SWAP" bs=1M count=2048 status=none
+fi
+chmod 600 "$SWAP"
+if ! blkid -p -s TYPE -o value "$SWAP" 2>/dev/null | grep -qx swap; then
+  mkswap "$SWAP" >/dev/null
+fi
+
+# Copy each directory. A per-directory marker on the new filesystem makes a
+# resumed run safe: if the source is already empty, the marker proves the
+# copy completed. If the source still has data (first run, or a re-flash
+# with a newer root filesystem), copy again and remove stale files.
+for rel in "${MOVES[@]}"; do
+  src="/$rel"
+  dst="$MNT/root/$rel"
+  marker="$(marker_for "$rel")"
+
+  if mountpoint -q "$src"; then
+    log "/$rel is already mounted; skipping copy"
+    touch "$marker"
+    continue
+  fi
+
+  [[ -d "$src" ]] || die "missing source directory /$rel"
+  mkdir -p "$dst"
+
+  if [[ -n "$(find "$src" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+    log "copying /$rel"
+    rsync -aHAX --numeric-ids --delete "$src/" "$dst/"
+    touch "$marker"
+  elif [[ -e "$marker" ]]; then
+    log "/$rel was already copied"
+  else
+    die "both /$rel and $dst are empty -- refusing to guess"
+  fi
+done
+sync
+
+# fstab block: one base mount plus a bind mount for each moved directory.
+# RequiresMountsFor keeps the binds behind the base mount on later boots.
+BLOCK="$(mktemp)"
+{
+  echo "# BEGIN alioth extra storage (managed by alioth-super-migrate)"
+  echo "LABEL=$LABEL $EXTRA ext4 defaults,noatime,nofail 0 2"
+  for rel in "${MOVES[@]}"; do
+    echo "$EXTRA/root/$rel /$rel none bind,x-systemd.requires-mounts-for=$EXTRA 0 0"
+  done
+  echo "# END alioth extra storage"
+} >"$BLOCK"
+
+write_fstab_block() {  # write_fstab_block <path>
+  local f="$1" dir tmp
+  dir="$(dirname "$f")"
+  tmp="$(mktemp "$dir/.fstab.alioth.XXXXXX")"
+  if [[ -e "$f" ]]; then
+    awk '
+      /^# BEGIN alioth extra storage/ { skip = 1 }
+      !skip { print }
+      /^# END alioth extra storage/ { skip = 0 }
+    ' "$f" >"$tmp"
+  fi
+  cat "$BLOCK" >>"$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$f"
+}
+
+# /etc is an overlay. Write the live copy (upper) and the lower copy that
+# systemd-fstab-generator may read before the overlay is mounted.
+mkdir -p "$ROOT_VIEW"
+mountpoint -q "$ROOT_VIEW" || mount --bind / "$ROOT_VIEW"
+write_fstab_block /etc/fstab
+write_fstab_block "$ROOT_VIEW/etc/fstab"
+
+# Move from the temporary mountpoint to the persistent one, then mount the
+# binds. The fstab is already written, so a failure here is recoverable on
+# the next boot: the copies on the new filesystem are complete.
+if (( TMP_ACTIVE )); then
+  umount "$TMP_MNT"
+  MNT="$EXTRA"
+  mountpoint -q "$EXTRA" || mount -o noatime "$DEV" "$EXTRA"
+fi
+
+for rel in "${MOVES[@]}"; do
+  mkdir -p "/$rel"
+  mountpoint -q "/$rel" || mount --bind "$EXTRA/root/$rel" "/$rel"
+done
+for rel in "${MOVES[@]}"; do
+  mountpoint -q "/$rel" || die "bind mount /$rel failed"
+done
+
+# Delete the originals through a non-recursive bind of the root filesystem.
+# That view does not contain child mounts, so $ROOT_VIEW/$rel is the old
+# directory on the root filesystem, not the new bind mount.
+for rel in "${MOVES[@]}"; do
+  if mountpoint -q "$ROOT_VIEW/$rel"; then
+    die "$ROOT_VIEW/$rel is a mountpoint; refusing to delete it"
+  fi
+  if [[ -d "$ROOT_VIEW/$rel" ]]; then
+    find "$ROOT_VIEW/$rel" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  fi
+done
+umount "$ROOT_VIEW" || true
+
+# Point the swap unit at the new file. The swap unit itself keeps
+# What=/swapfile; this symlink is what moves it to the new filesystem.
+swapoff "$SWAP_BASE" 2>/dev/null || true
+rm -f "$SWAP_BASE"
+ln -s "$EXTRA/swapfile" "$SWAP_BASE"
+swapon "$EXTRA/swapfile" 2>/dev/null || true
+
+rm -f "$BLOCK"
+touch "$DONE"
+sync
+log "done"
+df -h / "$EXTRA" 2>/dev/null || true

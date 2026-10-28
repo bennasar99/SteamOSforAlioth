@@ -39,12 +39,12 @@ behave here:
 
 ## Hard rules
 
-**Never write these partitions:**
+**Never write these partitions unless the row says otherwise:**
 
 | Partition | Why |
 |---|---|
 | `abl_a`, `abl_b` | The bootloader. Break it and the only way back is Qualcomm EDL 9008 mode with a signed firehose programmer. Nothing in this repo names these partitions, and `scripts/assert-alioth-boot-image.sh` fails if the string appears anywhere in the flash script, comments included. |
-| `super` | Android's system partitions (8.5 GiB). Kept on purpose: it costs nothing and it means Android can be restored. |
+| `super` | Android's system partitions (8.5 GiB). By default it is never written, so erasing data can bring Android back. The one exception is the opt-in extra-storage migration (`alioth.supermigrate=1`, offered by `flash-alioth.sh --install`): that formats it from the first-boot `alioth-super-migrate` service and makes a full stock ROM the only way back to Android. `flash-alioth.sh` itself never writes it. |
 | `vbmeta` | Never needed. The phone boots with `verifiedbootstate=orange` and vbmeta has never been written in this port's history. |
 
 **`userdata` is writable, and that is irreversible.** It is where the SteamOS
@@ -128,11 +128,15 @@ for t in scripts/assert-alioth-*; do "$t" || echo "FAILED: $t"; done
 
 Step 6 erases both `dtbo` partitions, writes the same boot image to both slots,
 writes `userdata`, and re-declares the active slot. First boot grows the
-filesystem and marks the slot successful once the system is actually up.
+filesystem and marks the slot successful once the system is actually up. It
+also asks, separately, whether to move static SteamOS data and the swap file
+onto Android's system partitions. That is a second irreversible choice: it
+erases Android's system images and means Android can only be restored with a
+full stock ROM.
 
-**Do not type `ERASE` on the user's behalf.** The prompt requires an
-interactive terminal specifically so that a script — or an agent — cannot
-satisfy it.
+**Do not type `ERASE` or answer the extra-storage prompt on the user's
+behalf.** Both prompts require an interactive terminal specifically so that a
+script — or an agent — cannot satisfy them.
 
 ### Iterating on the kernel afterwards
 
